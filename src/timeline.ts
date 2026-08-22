@@ -62,12 +62,15 @@ export function snapTime(
   project: AelionProject | null,
   view: ViewState,
   extra: readonly number[] = [],
+  options?: { readonly includeItems?: boolean },
 ): number {
   if (!view.snap || project === null) return Math.max(0, timeUs);
   const thresholdUs = Math.round((SNAP_PIXELS / view.pixelsPerSecond) * 1_000_000);
   const candidates = [0, view.currentTimeUs, ...extra];
-  for (const item of Object.values(project.items)) {
-    candidates.push(item.range.startUs, item.range.startUs + item.range.durationUs);
+  if (options?.includeItems !== false) {
+    for (const item of Object.values(project.items)) {
+      candidates.push(item.range.startUs, item.range.startUs + item.range.durationUs);
+    }
   }
   for (const transition of Object.values(project.transitions)) {
     candidates.push(

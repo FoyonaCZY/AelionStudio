@@ -30,16 +30,24 @@ export function rangeOverlapUs(
   );
 }
 
+export type ItemExcept = string | readonly string[] | undefined;
+
+function exceptSet(except: ItemExcept): ReadonlySet<string> {
+  if (except === undefined) return new Set();
+  return new Set(typeof except === 'string' ? [except] : except);
+}
+
 export function itemsOnTrack(
   project: AelionProject,
   trackId: string,
-  exceptId?: string,
+  except?: ItemExcept,
 ): ItemEntity[] {
   const track = project.tracks[trackId];
   if (track === undefined) return [];
+  const skip = exceptSet(except);
   return track.itemIds
     .flatMap(id => {
-      if (id === exceptId) return [];
+      if (skip.has(id)) return [];
       const item = project.items[id];
       return item === undefined ? [] : [item];
     })
@@ -48,16 +56,34 @@ export function itemsOnTrack(
     );
 }
 
+/** Swap after covering `fraction` of the shorter clip. Default is half; reverse uses less. */
+export function shouldSwapOccupant(
+  intendedStartUs: number,
+  movedDurationUs: number,
+  occupantStartUs: number,
+  occupantDurationUs: number,
+  fraction = 0.5,
+): boolean {
+  const overlap = rangeOverlapUs(
+    intendedStartUs,
+    movedDurationUs,
+    occupantStartUs,
+    occupantDurationUs,
+  );
+  const threshold = Math.min(movedDurationUs, occupantDurationUs) * fraction;
+  return overlap > threshold;
+}
+
 export function overlappingItemOnTrack(
   project: AelionProject,
   trackId: string,
   startUs: number,
   durationUs: number,
-  exceptId?: string,
+  except?: ItemExcept,
 ): ItemEntity | undefined {
   let best: ItemEntity | undefined;
   let bestOverlap = 0;
-  for (const item of itemsOnTrack(project, trackId, exceptId)) {
+  for (const item of itemsOnTrack(project, trackId, except)) {
     const overlap = rangeOverlapUs(startUs, durationUs, item.range.startUs, item.range.durationUs);
     if (overlap > bestOverlap) {
       best = item;
@@ -72,9 +98,12 @@ export function isRangeFreeOnTrack(
   trackId: string,
   startUs: number,
   durationUs: number,
-  exceptId?: string,
+  except?: ItemExcept,
 ): boolean {
-  return overlappingItemOnTrack(project, trackId, startUs, durationUs, exceptId) === undefined;
+  return (
+    startUs >= 0 &&
+    overlappingItemOnTrack(project, trackId, startUs, durationUs, except) === undefined
+  );
 }
 
 /** First time at or after `startUs` where `[t, t + durationUs)` is empty on the track. */
@@ -83,9 +112,9 @@ export function firstFreeStartOnTrack(
   trackId: string,
   startUs: number,
   durationUs: number,
-  exceptId?: string,
+  except?: ItemExcept,
 ): number {
-  const items = itemsOnTrack(project, trackId, exceptId);
+  const items = itemsOnTrack(project, trackId, except);
   let cursor = Math.max(0, startUs);
   for (const item of items) {
     const endUs = item.range.startUs + item.range.durationUs;
@@ -169,4 +198,85 @@ export function resolveInsertPlacement(
     }
   }
   return { createTrack: true, startUs };
+}
+
+/** Nearest gap beside an overlapping clip; `undefined` if there is no adjacent hole. */
+export function magnetStartOnTrack(
+  project: AelionProject,
+  trackId: string,
+  startUs: number,
+  durationUs: number,
+  except?: ItemExcept,
+): number | undefined {
+  const intended = Math.max(0, startUs);
+  const occupant = overlappingItemOnTrack(project, trackId, intended, durationUs, except);
+  if (occupant === undefined) return intended;
+  const before = occupant.range.startUs - durationUs;
+  const after = occupant.range.startUs + occupant.range.durationUs;
+  const intendedMid = intended + durationUs / 2;
+  const occupantMid = occupant.range.startUs + occupant.range.durationUs / 2;
+  const preferAfter = intendedMid >= occupantMid;
+  const candidates = preferAfter
+    ? [Math.max(0, after), Math.max(0, before)]
+    : [Math.max(0, before), Math.max(0, after)];
+  for (const candidate of candidates) {
+    if (isRangeFreeOnTrack(project, trackId, candidate, durationUs, except)) return candidate;
+  }
+  return undefined;
+}
+
+/** Right clip snaps to the left clip's in-point; left clip sits immediately after it. */
+export function packLeftRightSwap(
+  leftStartUs: number,
+  rightDurationUs: number,
+): { readonly rightStartUs: number; readonly leftStartUs: number } {
+  const rightStartUs = Math.max(0, leftStartUs);
+  return { rightStartUs, leftStartUs: rightStartUs + rightDurationUs };
+}
+
+/** Push later clips just enough so consecutive items on a track do not overlap. */
+export function settleTrackOverlaps(
+  items: readonly { readonly id: string; readonly startUs: number; readonly durationUs: number }[],
+): { readonly id: string; readonly startUs: number }[] {
+  const entries = items
+    .map(item => ({ id: item.id, startUs: item.startUs, durationUs: item.durationUs }))
+    .sort((left, right) => left.startUs - right.startUs || left.id.localeCompare(right.id));
+  for (let index = 1; index < entries.length; index += 1) {
+    const previous = entries[index - 1];
+    const current = entries[index];
+    if (previous === undefined || current === undefined) continue;
+    const previousEnd = previous.startUs + previous.durationUs;
+    if (current.startUs < previousEnd) current.startUs = previousEnd;
+  }
+  return entries.map(entry => ({ id: entry.id, startUs: entry.startUs }));
+}
+
+/** Keep a packed pair in place; shift only items that collide with it or sit after it. */
+export function settleAfterPackedPair(
+  items: readonly { readonly id: string; readonly startUs: number; readonly durationUs: number }[],
+  packedIds: ReadonlySet<string>,
+  pairStartUs: number,
+  pairEndUs: number,
+): { readonly id: string; readonly startUs: number }[] {
+  const result: { readonly id: string; readonly startUs: number }[] = [];
+  const others: { id: string; startUs: number; durationUs: number }[] = [];
+  for (const item of items) {
+    if (packedIds.has(item.id)) {
+      result.push({ id: item.id, startUs: item.startUs });
+      continue;
+    }
+    others.push({ id: item.id, startUs: item.startUs, durationUs: item.durationUs });
+  }
+  others.sort((left, right) => left.startUs - right.startUs || left.id.localeCompare(right.id));
+  let cursor = pairEndUs;
+  for (const item of others) {
+    if (item.startUs + item.durationUs <= pairStartUs) {
+      result.push({ id: item.id, startUs: item.startUs });
+      continue;
+    }
+    const startUs = item.startUs < cursor ? cursor : item.startUs;
+    result.push({ id: item.id, startUs });
+    cursor = Math.max(cursor, startUs + item.durationUs);
+  }
+  return result;
 }

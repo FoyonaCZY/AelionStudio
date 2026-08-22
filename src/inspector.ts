@@ -1,7 +1,7 @@
 import type { JsonObject } from '@aelionsdk/core';
 import type { AelionProject, ItemEntity, TransitionEntity } from '@aelionsdk/project-schema';
 
-import { encodeHex, readLinearColor } from './color.js';
+import { cssHex, encodeHex, readLinearColor } from './color.js';
 import { formatClock, formatTimecode, safeText } from './format.js';
 import { icon } from './icons.js';
 import {
@@ -15,9 +15,14 @@ import {
   numberField,
   readTransform,
   sequenceFormat,
-  stringField,
 } from './project.js';
 import type { InspectorTab, ViewState } from './view-state.js';
+import {
+  TEXT_FONT_PRESETS,
+  fontPresetId,
+  itemPlainText,
+  readItemTextStyle,
+} from './text-metrics.js';
 
 function field(label: string, control: string): string {
   return `<label class="field"><span>${label}</span>${control}</label>`;
@@ -51,21 +56,40 @@ function linearRate(item: ItemEntity): { rate: number; reverse: boolean } {
   return { rate: 1, reverse: false };
 }
 
-function textOf(item: ItemEntity): string {
-  if (item.type === 'caption') return stringField((item as JsonObject).text);
-  const paragraphs = (item as JsonObject).paragraphs;
-  if (!Array.isArray(paragraphs)) return '';
-  const first = paragraphs[0];
-  if (first === null || typeof first !== 'object' || Array.isArray(first)) return '';
-  const runs = (first as JsonObject).runs;
-  if (!Array.isArray(runs)) return '';
-  return runs
-    .map(run =>
-      run !== null && typeof run === 'object' && !Array.isArray(run)
-        ? stringField((run as JsonObject).text)
-        : '',
-    )
-    .join('');
+function textStyleFields(item: ItemEntity): string {
+  if (item.type !== 'text' && item.type !== 'caption') return '';
+  const style = readItemTextStyle(item);
+  const preset = fontPresetId(style.fontFamilies);
+  const fill = cssHex(style.fill);
+  const stroke = cssHex(style.stroke, '#000000');
+  const background = cssHex(style.backgroundFill, '#000000');
+  return `
+      ${field(
+        '字体',
+        `<select data-bind="fontFamily">
+          ${TEXT_FONT_PRESETS.map(
+            entry =>
+              `<option value="${entry.id}"${preset === entry.id ? ' selected' : ''}>${entry.label}</option>`,
+          ).join('')}
+        </select>`,
+      )}
+      ${field('字号', slider('fontSize', 12, 240, 1, Math.round(style.fontSizePx)))}
+      ${field('粗体', `<input data-bind="fontBold" type="checkbox"${style.fontWeight >= 600 ? ' checked' : ''}>`)}
+      ${field('斜体', `<input data-bind="fontItalic" type="checkbox"${style.fontStyle !== 'normal' ? ' checked' : ''}>`)}
+      ${field('文字颜色', `<input data-bind="textFill" type="color" value="${fill}">`)}
+      ${field('描边颜色', `<input data-bind="textStroke" type="color" value="${stroke}">`)}
+      ${field('描边', slider('strokeWidth', 0, 24, 0.5, style.strokeWidthPx))}
+      ${field(
+        '对齐',
+        `<select data-bind="textAlign">
+          <option value="start"${style.align === 'start' ? ' selected' : ''}>左</option>
+          <option value="center"${style.align === 'center' ? ' selected' : ''}>中</option>
+          <option value="end"${style.align === 'end' ? ' selected' : ''}>右</option>
+        </select>`,
+      )}
+      ${field('背景色', `<input data-bind="textBackground" type="color" value="${background}">`)}
+      ${field('背景透明', slider('backgroundOpacity', 0, 1, 0.01, style.backgroundOpacity))}
+  `;
 }
 
 export function renderInspector(options: {
@@ -105,7 +129,8 @@ export function renderInspector(options: {
       ${field('入点', `<span class="mono">${formatTimecode(item.range.startUs, format.frameRate)}</span>`)}
       ${field('时长', `<span class="mono">${formatClock(item.range.durationUs)}</span>`)}
       ${field('联动', `<span>${safeText(item.linkGroupId ?? '无')}</span>`)}
-      ${item.type === 'text' || item.type === 'caption' ? field('文本', `<textarea data-bind="text" rows="4">${safeText(textOf(item))}</textarea>`) : ''}
+      ${item.type === 'text' || item.type === 'caption' ? field('文本', `<textarea data-bind="text" rows="4">${safeText(itemPlainText(item))}</textarea>`) : ''}
+      ${textStyleFields(item)}
       ${field('启用', `<input data-bind="enabled" type="checkbox"${item.enabled ? ' checked' : ''}>`)}
     `;
   } else if (view.inspectorTab === 'video') {

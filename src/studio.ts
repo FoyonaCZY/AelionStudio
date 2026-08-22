@@ -27,18 +27,20 @@ import {
   setTransitionDuration,
   patchAudio,
   patchVisual,
-  resolveMovedItemOverlap,
+  moveItemAvoidingOverlap,
+  moveLinkedGroupAvoidingOverlap,
   resizeTimelineItem,
   setItemEnabled,
   setShapeFill,
   setSpeed,
   setTextContent,
+  patchTextStyle,
   splitAt,
   type LibraryDropKind,
 } from './commands.js';
 import { downloadBlob, downloadText, on, requiredElement } from './dom.js';
 import { EditorEngine } from './engine.js';
-import { errorMessage } from './errors.js';
+import { errorMessage, isIdleEditError } from './errors.js';
 import { clampTime, formatTimecode, frameDurationUs, quantizeToFrame } from './format.js';
 import { renderInspector } from './inspector.js';
 import { renderLibrary } from './library.js';
@@ -54,7 +56,9 @@ import {
   type VisualTransform,
 } from './project.js';
 import {
+  collectProgramSnapTargets,
   containLayout,
+  EMPTY_PROGRAM_SNAP_GUIDES,
   hitTestProgram,
   itemSourceBox,
   pointerMovePosition,
@@ -64,10 +68,17 @@ import {
   renderProgramOverlay,
   rotationFromPointer,
   scaleFromPointer,
+  snapProgramMove,
+  snapProgramRotation,
+  snapProgramScale,
+  type ProgramBox,
   type ProgramHandle,
+  type ProgramSnapGuides,
+  type ProgramSnapTargets,
   type ProgramYAxis,
 } from './program-overlay.js';
 import { parseSubtitleDocument } from './subtitle.js';
+import { fontPresetFamilies, readItemTextStyle } from './text-metrics.js';
 import {
   hitTimeFromEvent,
   isTimelineScrollbarHit,
@@ -88,6 +99,12 @@ import {
   type LibraryTab,
 } from './view-state.js';
 
+interface ProgramPointerSample {
+  readonly point: { readonly x: number; readonly y: number };
+  readonly lockAspect: boolean;
+  readonly snapEnabled: boolean;
+}
+
 interface ProgramGesture {
   readonly kind: 'move' | 'scale' | 'rotate';
   readonly handle: ProgramHandle;
@@ -97,20 +114,33 @@ interface ProgramGesture {
   readonly origin: VisualTransform;
   readonly originAngle: number;
   readonly yAxis: ProgramYAxis;
+  /**
+   * Resolved once at pointer-down. Nothing resizes the canvas or moves the
+   * other layers mid-drag, so recomputing these per pointer move only bought
+   * forced reflows and repeated text layout.
+   */
+  readonly viewScale: number;
+  readonly sourceBox: ProgramBox;
+  readonly snapTargets: ProgramSnapTargets;
+  readonly fitScale: { readonly x: number; readonly y: number };
+  /** Latest pointer sample, applied on the next animation frame. */
+  pending: ProgramPointerSample | undefined;
   live: VisualTransform;
+  snapGuides: ProgramSnapGuides;
   moved: boolean;
 }
 
 interface Gesture {
   readonly kind: 'move' | 'trim' | 'slip' | 'slide' | 'roll' | 'playhead' | 'transition-trim';
   readonly itemId: string;
-  readonly trackId: string;
+  trackId: string;
   readonly edge?: 'start' | 'end';
-  readonly originUs: number;
-  readonly startUs: number;
+  originUs: number;
+  startUs: number;
   readonly durationUs: number;
   readonly pointerId: number;
   readonly historyGroup: string;
+  swappedOccupantId?: string;
 }
 
 export class Studio {
@@ -160,6 +190,8 @@ export class Studio {
   #renderScheduled = false;
   #previewDirty = false;
   #previewRendering = false;
+  #scrubScheduled = false;
+  #scrubTimeUs = 0;
   #libraryKey = '';
   #inspectorKey = '';
   #timelineKey = '';
@@ -171,7 +203,7 @@ export class Studio {
   public async start(): Promise<void> {
     this.#layout();
     this.#bind();
-    this.setStatus('正在创建 Session…');
+    this.setStatus('正在启动…');
     await this.engine.bootRuntime(
       this.#els.canvas,
       () => {
@@ -185,6 +217,10 @@ export class Studio {
       message => this.setStatus(message, true),
     );
     this.engine.setPreviewPointerHandler(event => this.#onProgramPointer(event));
+    this.engine.setPreviewReadyHandler(() => {
+      if (this.view.error) this.setStatus('就绪');
+      if ((this.engine.preview?.snapshot().renderedFrames ?? 0) === 1) this.scheduleRender();
+    });
     this.engine.preview?.setQuality(this.view.previewQuality);
     if (location.hash === '' || location.hash === '#') {
       history.replaceState(null, '', HOME_HASH);
@@ -231,7 +267,11 @@ export class Studio {
     try {
       while (this.#previewDirty) {
         this.#previewDirty = false;
-        await this.engine.renderFrame(this.view.currentTimeUs);
+        try {
+          await this.engine.renderFrame(this.view.currentTimeUs);
+        } catch {
+          break;
+        }
       }
     } finally {
       this.#previewRendering = false;
@@ -345,7 +385,7 @@ export class Studio {
       .then(() => {
         this.setStatus(label);
         this.scheduleRender();
-        return this.engine.preview?.render(this.view.currentTimeUs);
+        this.#refreshPreview();
       })
       .catch((error: unknown) => this.setStatus(errorMessage(error, label), true));
   }
@@ -364,12 +404,35 @@ export class Studio {
     if (playhead instanceof HTMLElement) {
       playhead.style.left = `${TRACK_HEADER_WIDTH + (this.view.currentTimeUs / 1_000_000) * this.view.pixelsPerSecond - this.view.scrollLeftPx}px`;
     }
-    await this.engine.seek(this.view.currentTimeUs);
+    if (this.engine.session?.player.state === 'playing') {
+      await this.engine.seek(this.view.currentTimeUs);
+      return;
+    }
+    // Paused seeks go through the preview coalescer instead of awaiting a
+    // decode per call. It re-reads `currentTimeUs` on each pass, so a burst of
+    // scrub positions collapses into one in-flight frame at the newest time.
+    this.#refreshPreview();
+  }
+
+  /**
+   * Scrubbing fires on every pointer move, which can outrun the display several
+   * times over. Snapping alone scans every Item, transition and marker, so the
+   * whole scrub is folded into one animation frame.
+   */
+  #scheduleScrub(timeUs: number): void {
+    this.#scrubTimeUs = timeUs;
+    if (this.#scrubScheduled) return;
+    this.#scrubScheduled = true;
+    requestAnimationFrame(() => {
+      this.#scrubScheduled = false;
+      void this.#seek(this.#scrubTimeUs);
+    });
   }
 
   #bind(): void {
     on(this.#els.play, 'click', () => void this.#togglePlay());
     new ResizeObserver(() => this.#syncProgramOverlay()).observe(this.#els.canvas);
+    on(requiredElement('.viewer'), 'pointerdown', event => this.#onPreviewChromePointerDown(event));
     on(requiredElement('#to-start'), 'click', () => void this.#seek(0));
     on(
       requiredElement('#to-end'),
@@ -456,6 +519,10 @@ export class Studio {
     requiredElement('#export-cancel').addEventListener('click', () => {
       void this.engine.session?.export.cancel();
     });
+    requiredElement('#export-profile').addEventListener('change', () => {
+      this.#syncExportForm();
+      this.#setExportStatus('尚未预检', 'idle');
+    });
     on(this.#els.dialogNew, 'close', () => this.#onNewProject());
     on(this.#els.dialogUrl, 'close', () => this.#onImportUrl());
     on(this.#els.inspector, 'focusout', () => {
@@ -535,6 +602,9 @@ export class Studio {
       return;
     }
     if (name === 'export') {
+      this.#syncExportForm();
+      this.#els.exportProgress.style.width = '0';
+      requiredElement('#export-progress-track').hidden = true;
       this.#els.dialogExport.showModal();
       return;
     }
@@ -542,7 +612,7 @@ export class Studio {
       const project = this.engine.project;
       if (project === null) return;
       downloadText(JSON.stringify(project, null, 2), 'project.json', 'application/json');
-      this.setStatus('已导出 Project JSON');
+      this.setStatus('已导出 JSON');
       return;
     }
     if (name === 'undo') {
@@ -593,7 +663,7 @@ export class Studio {
     if (name === 'capability') void this.#showCapability();
     if (name === 'shortcuts') this.#showInfo('快捷键', SHORTCUTS);
     if (name === 'import-opfs') {
-      this.setStatus('导入本地文件时会自动写入 OPFS，刷新后可重绑素材', false);
+      this.setStatus('导入后会自动保存');
     }
   }
 
@@ -639,7 +709,7 @@ export class Studio {
     }
     if (name === 'freeze') {
       if (itemId === undefined) {
-        this.setStatus('先选择一个片段', true);
+        this.setStatus('先选中片段', true);
         return;
       }
       this.run('定格', () => freezeFrame(this.engine, itemId));
@@ -866,6 +936,55 @@ export class Studio {
       if (bind === 'fill' && target instanceof HTMLInputElement) {
         setShapeFill(this.engine, itemId, target.value, live);
       }
+      if (bind === 'fontFamily') {
+        patchTextStyle(this.engine, itemId, { fontFamilies: fontPresetFamilies(target.value) });
+      }
+      if (bind === 'fontSize') {
+        patchTextStyle(this.engine, itemId, { fontSizePx: Math.max(1, numeric) }, live);
+      }
+      if (bind === 'fontBold' && target instanceof HTMLInputElement) {
+        patchTextStyle(this.engine, itemId, { fontWeight: target.checked ? 700 : 400 });
+      }
+      if (bind === 'fontItalic' && target instanceof HTMLInputElement) {
+        patchTextStyle(this.engine, itemId, {
+          fontStyle: target.checked ? 'italic' : 'normal',
+        });
+      }
+      if (bind === 'textFill' && target instanceof HTMLInputElement) {
+        patchTextStyle(this.engine, itemId, { fill: target.value }, live);
+      }
+      if (bind === 'textStroke' && target instanceof HTMLInputElement) {
+        patchTextStyle(this.engine, itemId, { stroke: target.value }, live);
+      }
+      if (bind === 'strokeWidth') {
+        patchTextStyle(this.engine, itemId, { strokeWidthPx: Math.max(0, numeric) }, live);
+      }
+      if (
+        bind === 'textAlign' &&
+        (target.value === 'start' || target.value === 'center' || target.value === 'end')
+      ) {
+        patchTextStyle(this.engine, itemId, { align: target.value });
+      }
+      if (bind === 'textBackground' && target instanceof HTMLInputElement) {
+        const current = item === undefined ? undefined : readItemTextStyle(item);
+        patchTextStyle(
+          this.engine,
+          itemId,
+          {
+            backgroundFill: target.value,
+            ...((current?.backgroundOpacity ?? 0) < 0.01 ? { backgroundOpacity: 0.75 } : {}),
+          },
+          live,
+        );
+      }
+      if (bind === 'backgroundOpacity') {
+        patchTextStyle(
+          this.engine,
+          itemId,
+          { backgroundOpacity: Math.max(0, Math.min(1, numeric)) },
+          live,
+        );
+      }
       if (bind === 'opacity') patchVisual(this.engine, itemId, { opacity: numeric }, live);
       if ((bind === 'scaleX' || bind === 'scaleY') && item !== undefined) {
         const { scale } = readTransform(item);
@@ -958,16 +1077,20 @@ export class Studio {
       this.#els.timeline,
       this.view,
     );
-    const trackId = (event.target as Element | null)?.closest<HTMLElement>('[data-track]')?.dataset
-      .track;
+    const over = document.elementFromPoint(event.clientX, event.clientY);
+    const fromEvent = event.target instanceof Element ? event.target : null;
+    const trackId =
+      over?.closest<HTMLElement>('[data-track]')?.dataset.track ??
+      fromEvent?.closest<HTMLElement>('[data-track]')?.dataset.track;
     if (files.length > 0) {
       this.#importFiles(files, timeUs);
       return;
     }
     const payload = event.dataTransfer?.getData('text/aelion-drop');
     if (payload !== undefined && payload.length > 0) {
-      const sourceItemId = (event.target as Element | null)?.closest<HTMLElement>('[data-item]')
-        ?.dataset.item;
+      const sourceItemId =
+        over?.closest<HTMLElement>('[data-item]')?.dataset.item ??
+        fromEvent?.closest<HTMLElement>('[data-item]')?.dataset.item;
       this.#applyDrop(payload, timeUs, trackId, true, sourceItemId);
     }
   }
@@ -998,11 +1121,19 @@ export class Studio {
       return;
     }
     if (payload.startsWith('effect:')) {
-      const itemId = this.view.selectedItemId;
+      const project = this.engine.project;
+      const hovered =
+        sourceItemId === undefined || project === null ? undefined : project.items[sourceItemId];
+      const atItem =
+        hovered === undefined && project !== null && trackId !== undefined
+          ? itemAtTime(project, trackId, atUs)
+          : hovered;
+      const itemId = atItem?.id ?? this.view.selectedItemId;
       if (itemId === undefined) {
-        this.setStatus('先选择一个片段再应用效果', true);
+        this.setStatus('把效果拖到片段上', true);
         return;
       }
+      this.view.selectedItemId = itemId;
       this.view.inspectorTab = 'effect';
       this.#inspectorKey = '';
       this.run('效果', () => {
@@ -1020,7 +1151,7 @@ export class Studio {
           : hovered;
       const itemId = atItem?.id ?? this.view.selectedItemId;
       if (itemId === undefined) {
-        this.setStatus('先点选一段，或把转场拖到两段接头上', true);
+        this.setStatus('把转场拖到接头上', true);
         return;
       }
       this.run('转场', () => {
@@ -1157,7 +1288,7 @@ export class Studio {
     const timeUs = hitTimeFromEvent(event, this.#els.timeline, this.view);
     const deltaUs = timeUs - gesture.originUs;
     if (gesture.kind === 'playhead') {
-      void this.#seek(timeUs);
+      this.#scheduleScrub(timeUs);
       return;
     }
     if (gesture.kind === 'transition-trim' && gesture.edge !== undefined) {
@@ -1184,26 +1315,47 @@ export class Studio {
     const project = this.engine.project;
     const item = selected(project, gesture.itemId);
     if (session === undefined || project === null || item === undefined) return;
-    const snapped = snapTime(gesture.startUs + deltaUs, project, this.view, [
-      this.view.currentTimeUs,
-    ]);
     try {
       if (gesture.kind === 'move') {
         const over = document.elementFromPoint(event.clientX, event.clientY);
         const trackId = over?.closest<HTMLElement>('.track-row')?.dataset.track;
+        const changingTrack = trackId !== undefined && trackId !== gesture.trackId;
+        const targetStartUs = changingTrack
+          ? Math.max(0, gesture.startUs + deltaUs)
+          : snapTime(gesture.startUs + deltaUs, project, this.view, [this.view.currentTimeUs], {
+              includeItems: false,
+            });
         if (item.linkGroupId !== undefined && this.view.linkedEdit) {
-          session.transaction.commands.moveLinkedGroup({
-            groupId: item.linkGroupId,
-            deltaUs: snapped - item.range.startUs,
-            historyGroup: gesture.historyGroup,
-          });
+          moveLinkedGroupAvoidingOverlap(
+            this.engine,
+            item.linkGroupId,
+            targetStartUs - item.range.startUs,
+            gesture.historyGroup,
+          );
         } else {
-          session.transaction.commands.moveItem({
+          const beforeTrackId = item.trackId;
+          const beforeStartUs = item.range.startUs;
+          const result = moveItemAvoidingOverlap(this.engine, {
             itemId: item.id,
-            startUs: Math.max(0, snapped),
+            startUs: targetStartUs,
+            fromTrackId: gesture.trackId,
+            fromStartUs: gesture.startUs,
             ...(trackId !== undefined && trackId !== item.trackId ? { toTrackId: trackId } : {}),
+            ...(gesture.swappedOccupantId === undefined
+              ? {}
+              : { reverseSwapId: gesture.swappedOccupantId }),
             historyGroup: gesture.historyGroup,
           });
+          if (result?.kind === 'swap') gesture.swappedOccupantId = result.occupantId;
+          const nextItem = this.engine.project?.items[item.id];
+          if (
+            nextItem !== undefined &&
+            (nextItem.trackId !== beforeTrackId || nextItem.range.startUs !== beforeStartUs)
+          ) {
+            gesture.trackId = nextItem.trackId;
+            gesture.startUs = nextItem.range.startUs;
+            gesture.originUs = timeUs;
+          }
         }
       } else if (gesture.kind === 'trim' && gesture.edge !== undefined) {
         const toUs =
@@ -1240,7 +1392,7 @@ export class Studio {
         }
       }
     } catch (error) {
-      this.setStatus(errorMessage(error, '编辑被拒绝'), true);
+      if (!isIdleEditError(error)) this.setStatus(errorMessage(error, '编辑被拒绝'), true);
     }
   }
 
@@ -1249,21 +1401,6 @@ export class Studio {
     if (gesture?.pointerId !== event.pointerId) return;
     this.#gesture = undefined;
     if (gesture.kind === 'transition-trim') this.engine.endGesture();
-    if (gesture.kind === 'move') {
-      const item = selected(this.engine.project, gesture.itemId);
-      if (item !== undefined && !(item.linkGroupId !== undefined && this.view.linkedEdit)) {
-        try {
-          resolveMovedItemOverlap(this.engine, {
-            itemId: gesture.itemId,
-            originTrackId: gesture.trackId,
-            originStartUs: gesture.startUs,
-            historyGroup: gesture.historyGroup,
-          });
-        } catch (error) {
-          this.setStatus(errorMessage(error, '交换片段失败'), true);
-        }
-      }
-    }
     this.#restorePreviewSharpness();
     this.#refreshPreview();
     this.scheduleRender();
@@ -1411,7 +1548,7 @@ export class Studio {
       timeUs: this.view.currentTimeUs,
       selectedItemId: this.view.selectedItemId,
       yAxis: gesture?.yAxis ?? this.#programYAxis(),
-      ...(gesture === undefined ? {} : { transform: gesture.live }),
+      ...(gesture === undefined ? {} : { transform: gesture.live, snapGuides: gesture.snapGuides }),
     });
   }
 
@@ -1422,6 +1559,7 @@ export class Studio {
       this.#programApplyScheduled = false;
       const gesture = this.#programGesture;
       if (gesture?.moved !== true) return;
+      if (!this.#flushProgramPointer(gesture)) return;
       this.#commitProgramLive(gesture);
       this.#syncProgramOverlay();
     });
@@ -1431,40 +1569,62 @@ export class Studio {
     gesture: ProgramGesture,
     point: { readonly x: number; readonly y: number },
     lockAspect: boolean,
+    snapEnabled: boolean,
   ): void {
     const format = this.engine.format;
+    const project = this.engine.project;
+    const item = project?.items[gesture.itemId];
+    gesture.snapGuides = EMPTY_PROGRAM_SNAP_GUIDES;
     if (gesture.kind === 'move') {
-      gesture.live = {
-        ...gesture.origin,
-        positionPx: pointerMovePosition(gesture.origin, gesture.originPoint, point, gesture.yAxis),
-      };
+      const positionPx = pointerMovePosition(
+        gesture.origin,
+        gesture.originPoint,
+        point,
+        gesture.yAxis,
+      );
+      const live = { ...gesture.origin, positionPx };
+      if (!snapEnabled || item === undefined || project === null) {
+        gesture.live = live;
+        return;
+      }
+      const snapped = snapProgramMove({
+        item,
+        transform: live,
+        format,
+        viewScale: gesture.viewScale,
+        yAxis: gesture.yAxis,
+        targets: gesture.snapTargets,
+      });
+      gesture.live = { ...live, positionPx: snapped.positionPx };
+      gesture.snapGuides = snapped.guides;
       return;
     }
     if (gesture.kind === 'rotate') {
       gesture.live = {
         ...gesture.origin,
-        rotationDeg: rotationFromPointer(
-          point,
-          gesture.origin,
-          gesture.originAngle,
-          format,
-          gesture.yAxis,
+        rotationDeg: snapProgramRotation(
+          rotationFromPointer(point, gesture.origin, gesture.originAngle, format, gesture.yAxis),
+          snapEnabled,
         ),
       };
       return;
     }
-    const item = this.engine.project?.items[gesture.itemId];
-    if (item === undefined) return;
+    if (item === undefined || project === null) return;
     gesture.live = {
       ...gesture.origin,
-      scale: scaleFromPointer(
-        point,
-        gesture.handle,
-        gesture.origin,
-        itemSourceBox(item, format),
-        format,
+      scale: snapProgramScale(
+        scaleFromPointer(
+          point,
+          gesture.handle,
+          gesture.origin,
+          gesture.sourceBox,
+          format,
+          lockAspect,
+          gesture.yAxis,
+        ),
+        gesture.fitScale,
         lockAspect,
-        gesture.yAxis,
+        snapEnabled,
       ),
     };
   }
@@ -1481,17 +1641,7 @@ export class Studio {
       patchVisual(this.engine, gesture.itemId, { rotationDeg: gesture.live.rotationDeg }, live);
       return;
     }
-    const project = this.engine.project;
-    const format = this.engine.format;
-    const source = project === null ? undefined : mediaSourceSize(project, item);
-    const visual = itemVisual(item);
-    const fit = visualFitScale(
-      typeof visual?.fit === 'string' ? visual.fit : undefined,
-      source?.width ?? format.width,
-      source?.height ?? format.height,
-      format.width,
-      format.height,
-    );
+    const fit = gesture.fitScale;
     patchVisual(
       this.engine,
       gesture.itemId,
@@ -1505,6 +1655,24 @@ export class Studio {
     );
   }
 
+  #onPreviewChromePointerDown(event: Event): void {
+    if (!(event instanceof PointerEvent) || event.button !== 0) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target === this.#els.canvas || this.#els.canvas.contains(target)) return;
+    if (target.closest('.monitor-bar') !== null) return;
+    this.#clearPreviewSelection();
+  }
+
+  #clearPreviewSelection(): void {
+    if (this.view.selectedItemId === undefined && this.view.selectedTransitionId === undefined) {
+      return;
+    }
+    this.view.selectedItemId = undefined;
+    this.view.selectedTransitionId = undefined;
+    this.scheduleRender();
+  }
+
   #onProgramPointer(event: PreviewCanvasPointerEvent): void {
     if (this.view.tool !== 'select') return;
     const project = this.engine.project;
@@ -1515,22 +1683,27 @@ export class Studio {
     const point = event.point;
     event.originalEvent.preventDefault();
     if (event.type === 'move' && this.#programGesture === undefined && event.buttons === 0) {
-      const hover = point.inside
-        ? hitTestProgram(
-            project,
-            format,
-            this.view.currentTimeUs,
-            point,
-            this.view.selectedItemId,
-            viewScale,
-            yAxis,
-          )
-        : undefined;
+      if (!point.inside) {
+        this.#els.canvas.style.cursor = 'default';
+        return;
+      }
+      const hover = hitTestProgram(
+        project,
+        format,
+        this.view.currentTimeUs,
+        point,
+        this.view.selectedItemId,
+        viewScale,
+        yAxis,
+      );
       this.#els.canvas.style.cursor = programCursor(hover);
       return;
     }
     if (event.type === 'down') {
-      if (!point.inside) return;
+      if (!point.inside) {
+        this.#clearPreviewSelection();
+        return;
+      }
       const hit = hitTestProgram(
         project,
         format,
@@ -1556,6 +1729,8 @@ export class Studio {
       }
       this.#commitInspectorGesture();
       const origin = readFittedTransform(item, format, project);
+      const source = mediaSourceSize(project, item);
+      const visual = itemVisual(item);
       this.#programGesture = {
         kind: hit.handle === 'rotate' ? 'rotate' : hit.handle === 'body' ? 'move' : 'scale',
         handle: hit.handle,
@@ -1565,7 +1740,25 @@ export class Studio {
         origin,
         originAngle: pointerOriginAngle(point, origin, format, yAxis),
         yAxis,
+        viewScale,
+        sourceBox: itemSourceBox(item, format),
+        snapTargets: collectProgramSnapTargets({
+          project,
+          format,
+          timeUs: this.view.currentTimeUs,
+          excludeItemId: item.id,
+          yAxis,
+        }),
+        fitScale: visualFitScale(
+          typeof visual?.fit === 'string' ? visual.fit : undefined,
+          source?.width ?? format.width,
+          source?.height ?? format.height,
+          format.width,
+          format.height,
+        ),
+        pending: undefined,
         live: origin,
+        snapGuides: EMPTY_PROGRAM_SNAP_GUIDES,
         moved: false,
       };
       this.view.inspectorTab = 'video';
@@ -1582,15 +1775,27 @@ export class Studio {
       return;
     }
     const distance = Math.hypot(point.x - gesture.originPoint.x, point.y - gesture.originPoint.y);
-    if (!gesture.moved && distance < 3 / Math.max(viewScale, 0.001)) return;
+    if (!gesture.moved && distance < 3 / Math.max(gesture.viewScale, 0.001)) return;
     if (!gesture.moved) {
       gesture.moved = true;
       this.#programEdit = this.engine.beginGesture('画面变换');
-      this.engine.setQuality('draft', 0.5);
     }
-    this.#updateProgramLive(gesture, point, !event.originalEvent.shiftKey);
-    this.#syncProgramOverlay();
+    // Pointer moves can outrun the display. Keep only the newest sample and do
+    // the transform, commit and overlay work once per animation frame.
+    gesture.pending = {
+      point: { x: point.x, y: point.y },
+      lockAspect: !event.originalEvent.shiftKey,
+      snapEnabled: this.view.snap && !event.originalEvent.altKey,
+    };
     this.#scheduleProgramPreview();
+  }
+
+  #flushProgramPointer(gesture: ProgramGesture): boolean {
+    const pending = gesture.pending;
+    if (pending === undefined) return false;
+    gesture.pending = undefined;
+    this.#updateProgramLive(gesture, pending.point, pending.lockAspect, pending.snapEnabled);
+    return true;
   }
 
   #endProgramGesture(cancel: boolean): void {
@@ -1598,7 +1803,12 @@ export class Studio {
     this.#programApplyScheduled = false;
     this.#programGesture = undefined;
     if (gesture?.moved === true) {
-      if (!cancel) this.#commitProgramLive(gesture);
+      // A pointer sample can arrive after the last animation frame; releasing
+      // must land on it, not on the frame before it.
+      if (!cancel) {
+        this.#flushProgramPointer(gesture);
+        this.#commitProgramLive(gesture);
+      }
       this.engine.endGesture(cancel);
       this.setStatus(cancel ? '已取消变换' : '画面变换');
     }
@@ -1712,7 +1922,7 @@ export class Studio {
       for (const beat of result.beats.slice(0, 64)) {
         addMarker(this.engine, Math.round((beat.frame / sampleRate) * 1_000_000), 'Beat');
       }
-      this.setStatus(`已写入 ${Math.min(64, result.beats.length)} 个节拍标记`);
+      this.setStatus(`已标记 ${Math.min(64, result.beats.length)} 拍`);
       this.scheduleRender();
     } catch (error) {
       this.setStatus(errorMessage(error, '节拍检测失败'), true);
@@ -1728,7 +1938,7 @@ export class Studio {
       for (const change of result.changes.slice(0, 48)) {
         addMarker(this.engine, Math.round((change.frame / result.sampleRate) * 1_000_000), 'Cut');
       }
-      this.setStatus(`已写入 ${Math.min(48, result.changes.length)} 个能量切点`);
+      this.setStatus(`已标记 ${Math.min(48, result.changes.length)} 个切点`);
       this.scheduleRender();
     } catch (error) {
       this.setStatus(errorMessage(error, '能量分析失败'), true);
@@ -1755,6 +1965,7 @@ export class Studio {
     const session = this.engine.session;
     if (session === undefined) return;
     const sink = new SeekableMemorySink();
+    this.#setExportStatus('正在预检…', 'busy');
     try {
       const options = this.#exportOptions(sink);
       const report =
@@ -1765,11 +1976,14 @@ export class Studio {
               ...(options.audioBitrate === undefined ? {} : { audioBitrate: options.audioBitrate }),
             })
           : await session.export.preflightProfile(options);
-      this.#els.preflight.textContent = report.ok ? '预检通过' : JSON.stringify(report, null, 2);
+      this.#setExportStatus(
+        report.ok ? '预检通过，可以开始导出' : JSON.stringify(report, null, 2),
+        report.ok ? 'ok' : 'error',
+      );
       sink.cleanup();
     } catch (error) {
       sink.cleanup();
-      this.#els.preflight.textContent = errorMessage(error, '预检失败');
+      this.#setExportStatus(errorMessage(error, '预检失败'), 'error');
     }
   }
 
@@ -1778,7 +1992,12 @@ export class Studio {
     if (session === undefined) return;
     const sink = new SeekableMemorySink();
     const cancel = requiredElement('#export-cancel') as HTMLButtonElement;
+    const start = requiredElement('#export-start') as HTMLButtonElement;
     cancel.hidden = false;
+    start.disabled = true;
+    this.#els.exportProgress.style.width = '0';
+    requiredElement('#export-progress-track').hidden = false;
+    this.#setExportStatus('正在导出…', 'busy');
     try {
       const options = this.#exportOptions(sink);
       this.setStatus('正在导出…');
@@ -1797,15 +2016,27 @@ export class Studio {
         await session.export.startProfile({ ...options, onProgress });
         downloadBlob(sink.finalize(), exportName(options.profile), exportMime(options.profile));
       }
+      this.#els.exportProgress.style.width = '100%';
       this.setStatus('导出完成');
-      this.#els.preflight.textContent = '导出完成';
+      this.#setExportStatus('导出完成', 'done');
     } catch (error) {
       sink.cleanup();
       this.setStatus(errorMessage(error, '导出失败'), true);
-      this.#els.preflight.textContent = errorMessage(error, '导出失败');
+      this.#setExportStatus(errorMessage(error, '导出失败'), 'error');
     } finally {
       cancel.hidden = true;
+      start.disabled = false;
     }
+  }
+
+  #syncExportForm(): void {
+    const profile = (requiredElement('#export-profile') as HTMLSelectElement).value;
+    requiredElement('#export-bitrate-row').hidden = !profileUsesBitrate(profile);
+  }
+
+  #setExportStatus(message: string, state: 'idle' | 'ok' | 'error' | 'busy' | 'done'): void {
+    this.#els.preflight.textContent = message;
+    requiredElement('#export-status').dataset.state = state;
   }
 
   #exportOptions(
@@ -1894,7 +2125,7 @@ export class Studio {
     }
   }
 
-  async #enterHome(status = '选择一个工程，或新建项目', error = false): Promise<void> {
+  async #enterHome(status = '选择工程', error = false): Promise<void> {
     if (this.engine.session?.player.state === 'playing') {
       await this.engine.session.player.pause();
     }
@@ -1913,11 +2144,11 @@ export class Studio {
 
   async #enterEditor(projectId: string): Promise<void> {
     if (this.engine.project?.projectId === projectId && this.engine.persistence !== undefined) {
-      this.setStatus('就绪 · 草稿自动保存到 IndexedDB / OPFS');
+      this.setStatus('就绪');
       await this.#showEditor();
       return;
     }
-    this.setStatus('正在打开工程…');
+    this.setStatus('正在打开…');
     this.#resetEditorView();
     const opened = await this.engine.openStoredProject(projectId);
     if (!opened) {
@@ -1925,7 +2156,7 @@ export class Studio {
       await this.#enterHome('找不到该工程', true);
       return;
     }
-    this.setStatus('就绪 · 草稿自动保存到 IndexedDB / OPFS');
+    this.setStatus('就绪');
     await this.#showEditor();
   }
 
@@ -1991,6 +2222,7 @@ export class Studio {
 
   #queueWaveforms(project: AelionProject | null): void {
     if (project === null) return;
+    if (this.engine.session?.player.state === 'playing') return;
     for (const item of Object.values(project.items)) {
       if (
         item.type !== 'audio' ||
@@ -2009,6 +2241,8 @@ export class Studio {
 
   #queueFilmstrips(project: AelionProject | null): void {
     if (project === null) return;
+    if (this.engine.session?.player.state === 'playing') return;
+    if ((this.engine.preview?.snapshot().renderedFrames ?? 0) === 0) return;
     for (const item of Object.values(project.items)) {
       if (item.type !== 'video' && item.type !== 'image') continue;
       if (this.engine.hasCurrentFilmstrip(item) || this.#filmstripQueued.has(item.id)) continue;
@@ -2045,6 +2279,15 @@ function libraryPreviewUrls(
 
 function formatSeconds(us: number): string {
   return `${(us / 1_000_000).toFixed(2)}s`;
+}
+
+function profileUsesBitrate(profile: string): boolean {
+  return (
+    profile === 'mp4-h264-aac' ||
+    profile === 'webm-vp9-opus' ||
+    profile === 'mp4-av1-aac' ||
+    profile === 'mp4-hevc-aac'
+  );
 }
 
 function exportName(profile: string): string {
