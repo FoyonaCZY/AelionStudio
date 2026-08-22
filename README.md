@@ -21,12 +21,15 @@ Aelion Studio is a complete video editor that lives in a browser tab. Multi-trac
 
 Once the page has loaded, editing and exporting make **zero network requests**.
 
-<!--
-  Screenshots: add three images here before launch and replace this comment.
-  1. docs/screenshot-editor.png     full workspace (timeline + monitor + inspector)
-  2. docs/screenshot-transform.png  on-canvas transform with snapping guides
-  3. docs/screenshot-export.png     export dialog with capability preflight
--->
+<p align="center">
+  <img src="docs/screenshot-editor.png" alt="Aelion Studio workspace with timeline, program monitor and inspector" width="920" />
+</p>
+<p align="center">
+  <img src="docs/screenshot-transform.png" alt="On-canvas transform with snapping guides" width="920" />
+</p>
+<p align="center">
+  <img src="docs/screenshot-export.png" alt="Export dialog after a successful capability preflight" width="920" />
+</p>
 
 ## Why it's different
 

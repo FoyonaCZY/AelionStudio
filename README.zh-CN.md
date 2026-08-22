@@ -21,12 +21,15 @@ Aelion Studio 是一个完整跑在浏览器标签页里的视频剪辑器。多
 
 页面加载完成之后，从剪辑到导出的全过程**不产生任何网络请求**。
 
-<!--
-  截图位：发布前请在此处放置 3 张图并替换本注释
-  1. docs/screenshot-editor.png     完整编辑界面（时间线 + 监视器 + 检查器）
-  2. docs/screenshot-transform.png  节目监视器直接拖拽变换 + 吸附参考线
-  3. docs/screenshot-export.png     导出对话框（含能力预检）
--->
+<p align="center">
+  <img src="docs/screenshot-editor.png" alt="Aelion Studio 完整编辑界面：时间线、节目监视器与检查器" width="920" />
+</p>
+<p align="center">
+  <img src="docs/screenshot-transform.png" alt="节目监视器拖拽变换与吸附参考线" width="920" />
+</p>
+<p align="center">
+  <img src="docs/screenshot-export.png" alt="导出对话框，能力预检已通过" width="920" />
+</p>
 
 ## 为什么不一样
 

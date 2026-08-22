@@ -13,6 +13,11 @@ export default defineConfig({
   base: '/',
   root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [aelion()],
+  // @aelionsdk/sdk is excluded from prebundling so Workers resolve, but ajv is
+  // CommonJS and must still be optimized or named `default` imports fail.
+  optimizeDeps: {
+    include: ['ajv', 'ajv/dist/2020.js', 'ajv-formats'],
+  },
   build: { outDir: 'dist', sourcemap: true },
   // Cross-origin isolation lets audio take the SharedArrayBuffer ring path.
   // Without it playback falls back to postMessage, so serve the built site with
