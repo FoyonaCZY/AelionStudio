@@ -1,18 +1,48 @@
 {
-  "name": "@aelionsdk/editor-demo",
-  "version": "1.2.0-rc.2",
+  "name": "aelion-studio",
+  "version": "1.0.0",
   "private": true,
-  "type": "module",
-  "dependencies": {
-    "@aelionsdk/export": "workspace:*",
-    "@aelionsdk/sdk": "workspace:*"
+  "description": "Browser-based multi-track video editor. Media never leaves the machine and export runs locally through WebCodecs.",
+  "license": "MIT",
+  "author": "FoyonaCZY",
+  "homepage": "https://github.com/FoyonaCZY/AelionStudio#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FoyonaCZY/AelionStudio.git"
   },
-  "devDependencies": {
-    "@aelionsdk/vite-plugin": "workspace:*",
-    "vite": "7.3.6"
+  "bugs": {
+    "url": "https://github.com/FoyonaCZY/AelionStudio/issues"
+  },
+  "keywords": [
+    "video-editor",
+    "timeline",
+    "nle",
+    "webcodecs",
+    "webgl",
+    "webgpu",
+    "browser",
+    "local-first"
+  ],
+  "type": "module",
+  "packageManager": "pnpm@10.13.1",
+  "engines": {
+    "node": ">=24 <25"
   },
   "scripts": {
+    "dev": "vite",
     "build": "vite build",
-    "dev": "vite"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aelionsdk/core": "^1.2.0-rc.4",
+    "@aelionsdk/export": "^1.2.0-rc.4",
+    "@aelionsdk/project-schema": "^1.2.0-rc.4",
+    "@aelionsdk/sdk": "^1.2.0-rc.4"
+  },
+  "devDependencies": {
+    "@aelionsdk/vite-plugin": "^1.2.0-rc.4",
+    "typescript": "5.8.3",
+    "vite": "7.3.6"
   }
 }

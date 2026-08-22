@@ -1,0 +1,9 @@
+# Marks Studio as its own pnpm workspace root.
+#
+# Without this, cloning Studio into an AelionSDK checkout as `apps/editor-demo`
+# makes pnpm walk up, find the SDK's workspace file and skip this package (the
+# SDK excludes `apps/editor-demo` so its frozen lockfile stays stable). Studio
+# then never installs its own dependencies. Owning the boundary makes the
+# install behave the same nested or standalone.
+packages:
+  - '.'
