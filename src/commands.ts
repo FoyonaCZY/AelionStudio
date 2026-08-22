@@ -36,12 +36,24 @@ import {
   type VisualPatch,
 } from './project.js';
 import { frameDurationUs } from './format.js';
-import { boxKeepingCenter, jsonBox, measurePlainText, textInkBox } from './text-metrics.js';
+import {
+  boxKeepingCenter,
+  jsonBox,
+  itemPlainText,
+  itemStyleRecord,
+  measurePlainText,
+  readItemTextStyle,
+  textInkBox,
+} from './text-metrics.js';
 import {
   insertPolicyForMedia,
+  magnetStartOnTrack,
   newTrackAnchorId,
   overlappingItemOnTrack,
+  packLeftRightSwap,
   resolveInsertPlacement,
+  settleAfterPackedPair,
+  shouldSwapOccupant,
   type ResolveInsertOptions,
 } from './timeline-layout.js';
 
@@ -810,45 +822,121 @@ export function setShapeFill(
   );
 }
 
+export interface TextStylePatch {
+  readonly fontFamilies?: readonly string[];
+  readonly fontSizePx?: number;
+  readonly fontWeight?: number;
+  readonly fontStyle?: 'normal' | 'italic' | 'oblique';
+  readonly fill?: string;
+  readonly stroke?: string;
+  readonly strokeWidthPx?: number;
+  readonly align?: 'start' | 'center' | 'end';
+  readonly backgroundFill?: string;
+  readonly backgroundOpacity?: number;
+}
+
+function applyStylePatch(existing: JsonObject, patch: TextStylePatch): JsonObject {
+  const next: JsonObject = { ...existing };
+  if (patch.fontFamilies !== undefined) next.fontFamilies = [...patch.fontFamilies];
+  if (patch.fontSizePx !== undefined) next.fontSizePx = patch.fontSizePx;
+  if (patch.fontWeight !== undefined) next.fontWeight = patch.fontWeight;
+  if (patch.fontStyle !== undefined) next.fontStyle = patch.fontStyle;
+  if (patch.fill !== undefined) next.fill = patch.fill;
+  if (patch.stroke !== undefined) next.stroke = patch.stroke;
+  if (patch.strokeWidthPx !== undefined) next.strokeWidthPx = patch.strokeWidthPx;
+  if (patch.align !== undefined) next.align = patch.align;
+  if (patch.backgroundFill !== undefined) next.backgroundFill = patch.backgroundFill;
+  if (patch.backgroundOpacity !== undefined) next.backgroundOpacity = patch.backgroundOpacity;
+  if (
+    typeof next.strokeWidthPx === 'number' &&
+    next.strokeWidthPx > 0 &&
+    typeof next.stroke !== 'string'
+  ) {
+    next.stroke = '#000000';
+  }
+  return next;
+}
+
+function writeTextStyle(
+  engine: EditorEngine,
+  item: ItemEntity,
+  style: JsonObject,
+  interactive?: AelionInteractiveEdit,
+): void {
+  const project = requireProject(engine);
+  const format = sequenceFormat(project);
+  const previous = textInkBox(item, format);
+  const text = itemPlainText(item);
+  const fontSizePx = typeof style.fontSizePx === 'number' ? style.fontSizePx : 32;
+  const letterSpacingPx = typeof style.letterSpacingPx === 'number' ? style.letterSpacingPx : 0;
+  const measured = measurePlainText(text, fontSizePx, letterSpacingPx);
+  const box = jsonBox(
+    boxKeepingCenter(previous, { x: 0, y: 0, width: measured.width, height: measured.height }),
+  );
+  write(
+    engine,
+    '文字样式',
+    tx => {
+      if (item.type === 'caption') {
+        tx.setField('items', item.id, ['style'], style);
+      } else {
+        const paragraphs = (item as JsonObject).paragraphs;
+        const first =
+          Array.isArray(paragraphs) && paragraphs[0] !== null && typeof paragraphs[0] === 'object'
+            ? (paragraphs[0] as JsonObject)
+            : { style: {}, runs: [] };
+        tx.setField(
+          'items',
+          item.id,
+          ['paragraphs'],
+          [
+            {
+              style: first.style ?? {},
+              runs: [{ text, style }],
+            },
+          ],
+        );
+      }
+      tx.setField('items', item.id, ['box'], box);
+    },
+    interactive,
+  );
+}
+
+export function patchTextStyle(
+  engine: EditorEngine,
+  itemId: string,
+  patch: TextStylePatch,
+  interactive?: AelionInteractiveEdit,
+): void {
+  const item = requireProject(engine).items[itemId];
+  if (item === undefined || (item.type !== 'text' && item.type !== 'caption')) return;
+  writeTextStyle(engine, item, applyStylePatch(itemStyleRecord(item), patch), interactive);
+}
+
 export function setTextContent(engine: EditorEngine, itemId: string, text: string): void {
   const session = requireSession(engine);
   const project = requireProject(engine);
   const item = project.items[itemId];
-  if (item === undefined) return;
+  if (item === undefined || (item.type !== 'text' && item.type !== 'caption')) return;
   const format = sequenceFormat(project);
   const previous = textInkBox(item, format);
+  const style = readItemTextStyle(item);
+  const next = measurePlainText(text, style.fontSizePx, style.letterSpacingPx);
+  const box = jsonBox(
+    boxKeepingCenter(previous, { x: 0, y: 0, width: next.width, height: next.height }),
+  );
   if (item.type === 'caption') {
-    const style = (item as JsonObject).style;
-    const fontSizePx =
-      style !== null && typeof style === 'object' && !Array.isArray(style)
-        ? typeof (style as JsonObject).fontSizePx === 'number'
-          ? ((style as JsonObject).fontSizePx as number)
-          : 42
-        : 42;
-    const next = measurePlainText(text, fontSizePx);
     session.transaction.edit(
       tx => {
         tx.setField('items', itemId, ['text'], text);
         tx.setField('items', itemId, ['name'], text.slice(0, 24));
-        tx.setField(
-          'items',
-          itemId,
-          ['box'],
-          jsonBox(
-            boxKeepingCenter(previous, {
-              x: 0,
-              y: 0,
-              width: next.width,
-              height: next.height,
-            }),
-          ),
-        );
+        tx.setField('items', itemId, ['box'], box);
       },
       { label: '编辑字幕' },
     );
     return;
   }
-  if (item.type !== 'text') return;
   const paragraphs = (item as JsonObject).paragraphs;
   const first =
     Array.isArray(paragraphs) && paragraphs[0] !== null && typeof paragraphs[0] === 'object'
@@ -859,12 +947,6 @@ export function setTextContent(engine: EditorEngine, itemId: string, text: strin
     runs[0] !== null && typeof runs[0] === 'object' && !Array.isArray(runs[0])
       ? (runs[0] as JsonObject)
       : { style: {} };
-  const runStyle =
-    run.style !== null && typeof run.style === 'object' && !Array.isArray(run.style)
-      ? (run.style as JsonObject)
-      : {};
-  const fontSizePx = typeof runStyle.fontSizePx === 'number' ? runStyle.fontSizePx : 72;
-  const next = measurePlainText(text, fontSizePx);
   session.transaction.edit(
     tx => {
       tx.setField(
@@ -879,19 +961,7 @@ export function setTextContent(engine: EditorEngine, itemId: string, text: strin
         ],
       );
       tx.setField('items', itemId, ['name'], text.slice(0, 24));
-      tx.setField(
-        'items',
-        itemId,
-        ['box'],
-        jsonBox(
-          boxKeepingCenter(previous, {
-            x: 0,
-            y: 0,
-            width: next.width,
-            height: next.height,
-          }),
-        ),
-      );
+      tx.setField('items', itemId, ['box'], box);
     },
     { label: '编辑文字' },
   );
@@ -1039,18 +1109,33 @@ function resizeDeltaLimit(
   minDurationUs: number,
 ): { readonly min: number; readonly max: number } {
   const window = isTimedMedia(item) ? mediaSourceWindow(project, item) : undefined;
+  const { left, right } = neighborPair(project, item.id);
+  const gapBefore =
+    left === undefined
+      ? item.range.startUs
+      : item.range.startUs - (left.range.startUs + left.range.durationUs);
+  const gapAfter =
+    right === undefined
+      ? Number.MAX_SAFE_INTEGER / 4
+      : right.range.startUs - (item.range.startUs + item.range.durationUs);
   if (edge === 'end') {
-    const max =
+    const sourceMax =
       window?.assetDurationUs === undefined
         ? Number.MAX_SAFE_INTEGER / 4
         : Math.max(0, window.assetDurationUs - window.sourceStartUs - window.sourceDurationUs);
-    return { min: minDurationUs - item.range.durationUs, max };
+    return {
+      min: minDurationUs - item.range.durationUs,
+      max: Math.min(sourceMax, gapAfter > 0 ? gapAfter : 0),
+    };
   }
-  const min = -Math.min(
+  const sourceMin = -Math.min(
     item.range.startUs,
     window === undefined ? item.range.startUs : window.sourceStartUs,
   );
-  return { min, max: item.range.durationUs - minDurationUs };
+  return {
+    min: Math.max(sourceMin, gapBefore > 0 ? -gapBefore : 0),
+    max: item.range.durationUs - minDurationUs,
+  };
 }
 
 function mediaSourceWindow(
@@ -1119,58 +1204,298 @@ function relocateItem(
   }
 }
 
+function itemTrackKind(item: ItemEntity): TrackEntity['kind'] {
+  return item.type === 'audio' ? 'audio' : item.type === 'caption' ? 'caption' : 'visual';
+}
+
+export type MoveItemResult =
+  | { readonly kind: 'swap'; readonly occupantId: string }
+  | { readonly kind: 'move' };
+
 /**
- * After a timeline move, two clips must not share time on one track.
- * Same track: exchange start times. Other track: send the occupant back
- * to the dragged clip's original slot.
+ * Move a clip under the pointer. Same-track swap packs the right clip onto the
+ * left clip's in-point and seats the left clip immediately after it; later
+ * clips shift only if they collide. Cross-track swap exchanges tracks and
+ * leaves other clips' in/out alone.
  */
-export function resolveMovedItemOverlap(
+export function moveItemAvoidingOverlap(
   engine: EditorEngine,
   options: {
     readonly itemId: string;
-    readonly originTrackId: string;
-    readonly originStartUs: number;
+    readonly startUs: number;
+    readonly toTrackId?: string;
+    readonly fromTrackId?: string;
+    readonly fromStartUs?: number;
+    readonly reverseSwapId?: string;
     readonly historyGroup?: string;
   },
-): boolean {
+): MoveItemResult | undefined {
   const project = requireProject(engine);
   const moved = project.items[options.itemId];
-  if (moved === undefined) return false;
+  if (moved === undefined) return undefined;
+  const intendedStart = Math.max(0, Math.round(options.startUs));
+  const destTrackId = options.toTrackId ?? moved.trackId;
+  const destTrack = project.tracks[destTrackId];
+  const homeTrackId = options.fromTrackId ?? moved.trackId;
+  const homeStartUs = Math.max(0, Math.round(options.fromStartUs ?? moved.range.startUs));
+  if (destTrack === undefined || destTrack.locked || destTrack.kind !== itemTrackKind(moved)) {
+    return undefined;
+  }
   const occupant = overlappingItemOnTrack(
     project,
-    moved.trackId,
-    moved.range.startUs,
+    destTrackId,
+    intendedStart,
     moved.range.durationUs,
-    moved.id,
+    [moved.id],
   );
-  if (occupant === undefined) return false;
-  const destTrack = project.tracks[options.originTrackId];
-  const occupantKind =
-    occupant.type === 'audio' ? 'audio' : occupant.type === 'caption' ? 'caption' : 'visual';
-  if (destTrack === undefined || destTrack.kind !== occupantKind || destTrack.locked) {
-    return false;
+  const homeTrack = project.tracks[homeTrackId];
+  const canSwap =
+    occupant !== undefined &&
+    homeTrack !== undefined &&
+    !homeTrack.locked &&
+    homeTrack.kind === itemTrackKind(occupant) &&
+    shouldSwapOccupant(
+      intendedStart,
+      moved.range.durationUs,
+      occupant.range.startUs,
+      occupant.range.durationUs,
+      occupant.id === options.reverseSwapId ? 0.25 : 0.5,
+    );
+
+  if (occupant === undefined || !canSwap) {
+    const nextStartUs =
+      occupant === undefined
+        ? intendedStart
+        : magnetStartOnTrack(project, destTrackId, intendedStart, moved.range.durationUs, [
+            moved.id,
+          ]);
+    if (nextStartUs === undefined) return undefined;
+    if (destTrackId === moved.trackId && nextStartUs === moved.range.startUs) return undefined;
+    const writes = new Map<string, { readonly trackId: string; readonly startUs: number }>([
+      [moved.id, { trackId: destTrackId, startUs: nextStartUs }],
+    ]);
+    if (!applyItemRelocations(engine, writes, '移动', options.historyGroup)) return undefined;
+    return { kind: 'move' };
   }
-  const sameTrack =
-    moved.trackId === options.originTrackId && occupant.trackId === options.originTrackId;
-  const movedStartUs = sameTrack ? occupant.range.startUs : moved.range.startUs;
-  const occupantTrackId = options.originTrackId;
-  const occupantStartUs = options.originStartUs;
-  if (
-    moved.range.startUs === movedStartUs &&
-    occupant.trackId === occupantTrackId &&
-    occupant.range.startUs === occupantStartUs
-  ) {
-    return false;
+
+  const placed = new Map<string, { readonly trackId: string; readonly startUs: number }>();
+  if (homeTrackId === destTrackId) {
+    const movedIsLeft = homeStartUs <= occupant.range.startUs;
+    const left = movedIsLeft ? moved : occupant;
+    const right = movedIsLeft ? occupant : moved;
+    const leftStartUs = movedIsLeft ? homeStartUs : occupant.range.startUs;
+    const packed = packLeftRightSwap(leftStartUs, right.range.durationUs);
+    placed.set(right.id, { trackId: destTrackId, startUs: packed.rightStartUs });
+    placed.set(left.id, { trackId: destTrackId, startUs: packed.leftStartUs });
+    const pairEndUs = packed.leftStartUs + left.range.durationUs;
+    const writes = writesFromSettled(
+      project,
+      placed,
+      settleAfterPackedPair(
+        trackItemsAfterMove(project, destTrackId, placed),
+        new Set([left.id, right.id]),
+        packed.rightStartUs,
+        pairEndUs,
+      ),
+    );
+    if (!applyItemRelocations(engine, writes, '交换片段', options.historyGroup)) return undefined;
+    return { kind: 'swap', occupantId: occupant.id };
   }
+
+  const exceptPair = [moved.id, occupant.id];
+  const incomingStart = magnetStartOnTrack(
+    project,
+    destTrackId,
+    intendedStart,
+    moved.range.durationUs,
+    exceptPair,
+  );
+  const occupantStart = magnetStartOnTrack(
+    project,
+    homeTrackId,
+    occupant.range.startUs,
+    occupant.range.durationUs,
+    exceptPair,
+  );
+  if (incomingStart === undefined || occupantStart === undefined) return undefined;
+  placed.set(moved.id, { trackId: destTrackId, startUs: incomingStart });
+  placed.set(occupant.id, { trackId: homeTrackId, startUs: occupantStart });
+  if (!applyItemRelocations(engine, placed, '交换片段', options.historyGroup)) return undefined;
+  return { kind: 'swap', occupantId: occupant.id };
+}
+
+function writesFromSettled(
+  project: AelionProject,
+  placed: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+  settled: readonly { readonly id: string; readonly startUs: number }[],
+): Map<string, { readonly trackId: string; readonly startUs: number }> {
+  const writes = new Map(placed);
+  for (const entry of settled) {
+    const item = project.items[entry.id];
+    if (item === undefined) continue;
+    const nextTrackId = placed.get(entry.id)?.trackId ?? item.trackId;
+    if (item.range.startUs === entry.startUs && item.trackId === nextTrackId) continue;
+    writes.set(entry.id, { trackId: nextTrackId, startUs: entry.startUs });
+  }
+  return writes;
+}
+
+function applyItemRelocations(
+  engine: EditorEngine,
+  writes: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+  label: string,
+  historyGroup?: string,
+): boolean {
+  const project = requireProject(engine);
+  let changed = false;
+  for (const [id, next] of writes) {
+    const item = project.items[id];
+    if (item === undefined) continue;
+    if (item.trackId !== next.trackId || item.range.startUs !== next.startUs) changed = true;
+  }
+  if (!changed) return false;
   requireSession(engine).transaction.edit(
     tx => {
-      relocateItem(tx, moved, moved.trackId, movedStartUs);
-      relocateItem(tx, occupant, occupantTrackId, occupantStartUs);
+      for (const [id, next] of writes) {
+        const item = project.items[id];
+        if (item === undefined) continue;
+        relocateItem(tx, item, next.trackId, next.startUs);
+      }
+      syncTransitionsAfterMoves(tx, project, writes);
     },
     {
-      label: '交换片段',
-      ...(options.historyGroup === undefined ? {} : { historyGroup: options.historyGroup }),
+      label,
+      ...(historyGroup === undefined ? {} : { historyGroup }),
     },
   );
   return true;
+}
+
+function projectedItem(
+  item: ItemEntity,
+  placed: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+): ItemEntity {
+  const next = placed.get(item.id);
+  if (next === undefined) return item;
+  return {
+    ...item,
+    trackId: next.trackId,
+    range: { ...item.range, startUs: next.startUs },
+  };
+}
+
+function syncTransitionsAfterMoves(
+  tx: Parameters<EditCallback>[0],
+  project: AelionProject,
+  placed: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+): void {
+  for (const transition of Object.values(project.transitions)) {
+    const fromOrig = project.items[transition.fromItemId];
+    const toOrig = project.items[transition.toItemId];
+    if (fromOrig === undefined || toOrig === undefined) continue;
+    const from = projectedItem(fromOrig, placed);
+    const to = projectedItem(toOrig, placed);
+    if (from.trackId !== to.trackId) {
+      tx.listRemove('sequences', transition.sequenceId, ['transitionIds'], transition.id);
+      tx.deleteEntity('transitions', transition.id);
+      tx.deleteEntity('materialInstances', transition.materialInstanceId);
+      continue;
+    }
+    const earlier = from.range.startUs <= to.range.startUs ? from : to;
+    const later = earlier === from ? to : from;
+    const range = transitionRangeForPair(earlier, later, transition.range.durationUs);
+    if (transition.fromItemId !== earlier.id) {
+      tx.setField('transitions', transition.id, ['fromItemId'], earlier.id);
+    }
+    if (transition.toItemId !== later.id) {
+      tx.setField('transitions', transition.id, ['toItemId'], later.id);
+    }
+    if (transition.trackId !== from.trackId) {
+      tx.setField('transitions', transition.id, ['trackId'], from.trackId);
+    }
+    if (transition.range.startUs !== range.startUs) {
+      tx.setField('transitions', transition.id, ['range', 'startUs'], range.startUs);
+    }
+  }
+}
+
+function trackItemsAfterMove(
+  project: AelionProject,
+  trackId: string,
+  placed: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+): { readonly id: string; readonly startUs: number; readonly durationUs: number }[] {
+  const items: { readonly id: string; readonly startUs: number; readonly durationUs: number }[] =
+    [];
+  for (const item of Object.values(project.items)) {
+    const nextTrackId = placed.get(item.id)?.trackId ?? item.trackId;
+    if (nextTrackId !== trackId) continue;
+    items.push({
+      id: item.id,
+      startUs: placed.get(item.id)?.startUs ?? item.range.startUs,
+      durationUs: item.range.durationUs,
+    });
+  }
+  return items;
+}
+
+export function moveLinkedGroupAvoidingOverlap(
+  engine: EditorEngine,
+  groupId: string,
+  deltaUs: number,
+  historyGroup?: string,
+): void {
+  const project = requireProject(engine);
+  const group = project.linkGroups[groupId];
+  if (group === undefined) return;
+  const members = group.itemIds.flatMap(id => {
+    const item = project.items[id];
+    return item === undefined ? [] : [item];
+  });
+  if (members.length === 0) return;
+  const except = group.itemIds;
+  let delta = Math.round(deltaUs);
+  for (const member of members) {
+    delta = Math.max(delta, -member.range.startUs);
+  }
+  for (let pass = 0; pass <= members.length; pass += 1) {
+    const before = delta;
+    for (const member of members) {
+      delta = clampDeltaBeforeOverlap(project, member, delta, except);
+    }
+    if (delta === before) break;
+  }
+  if (delta === 0) return;
+  requireSession(engine).transaction.commands.moveLinkedGroup({
+    groupId,
+    deltaUs: delta,
+    ...(historyGroup === undefined ? {} : { historyGroup }),
+  });
+}
+
+function clampDeltaBeforeOverlap(
+  project: AelionProject,
+  item: ItemEntity,
+  deltaUs: number,
+  except: readonly string[],
+): number {
+  if (deltaUs === 0) return 0;
+  const intended = item.range.startUs + deltaUs;
+  const occupant = overlappingItemOnTrack(
+    project,
+    item.trackId,
+    intended,
+    item.range.durationUs,
+    except,
+  );
+  if (occupant === undefined) return deltaUs;
+  if (deltaUs > 0) {
+    return Math.max(
+      0,
+      Math.min(deltaUs, occupant.range.startUs - item.range.durationUs - item.range.startUs),
+    );
+  }
+  return Math.min(
+    0,
+    Math.max(deltaUs, occupant.range.startUs + occupant.range.durationUs - item.range.startUs),
+  );
 }

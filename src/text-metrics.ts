@@ -13,7 +13,7 @@ export interface TextBox {
   readonly height: number;
 }
 
-interface TextStyle {
+export interface TextStyle {
   readonly fontFamilies: readonly string[];
   readonly fontSizePx: number;
   readonly fontWeight: number;
@@ -21,9 +21,13 @@ interface TextStyle {
   readonly lineHeightPx: number;
   readonly letterSpacingPx: number;
   readonly strokeWidthPx: number;
+  readonly stroke: string | undefined;
   readonly fill: string;
   readonly align: 'start' | 'center' | 'end';
   readonly direction: 'ltr' | 'rtl';
+  readonly backgroundFill: string;
+  readonly backgroundOpacity: number;
+  readonly backgroundPaddingPx: number;
 }
 
 interface LaidSpan {
@@ -38,6 +42,49 @@ interface LaidLine {
   readonly width: number;
   readonly height: number;
   readonly spans: readonly LaidSpan[];
+}
+
+export const TEXT_FONT_PRESETS = [
+  {
+    id: 'default',
+    label: '默认',
+    families: ['Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+  },
+  {
+    id: 'yahei',
+    label: '微软雅黑',
+    families: ['Microsoft YaHei', 'PingFang SC', 'sans-serif'],
+  },
+  {
+    id: 'hei',
+    label: '黑体',
+    families: ['SimHei', 'Heiti SC', 'sans-serif'],
+  },
+  {
+    id: 'song',
+    label: '宋体',
+    families: ['SimSun', 'Songti SC', 'serif'],
+  },
+  {
+    id: 'arial',
+    label: 'Arial',
+    families: ['Arial', 'Helvetica Neue', 'sans-serif'],
+  },
+] as const;
+
+export function fontPresetId(families: readonly string[]): string {
+  const first = families[0];
+  for (const preset of TEXT_FONT_PRESETS) {
+    if (preset.families[0] === first) return preset.id;
+  }
+  return 'default';
+}
+
+export function fontPresetFamilies(id: string): readonly string[] {
+  for (const preset of TEXT_FONT_PRESETS) {
+    if (preset.id === id) return preset.families;
+  }
+  return TEXT_FONT_PRESETS[0].families;
 }
 
 const graphemeSegmenter = new Intl.Segmenter('und', { granularity: 'grapheme' });
@@ -109,10 +156,56 @@ function readStyle(runStyle: JsonObject, paragraphStyle: JsonObject = {}): TextS
     lineHeightPx: Math.max(fontSizePx, finite(combined.lineHeightPx, fontSizePx * 1.2)),
     letterSpacingPx: finite(combined.letterSpacingPx, 0),
     strokeWidthPx: Math.max(0, finite(combined.strokeWidthPx, 0)),
+    stroke: typeof combined.stroke === 'string' ? combined.stroke : undefined,
     fill: typeof combined.fill === 'string' && combined.fill.length > 0 ? combined.fill : '#ffffff',
     align: align === 'center' || align === 'end' ? align : 'start',
     direction: direction === 'rtl' ? 'rtl' : 'ltr',
+    backgroundFill:
+      typeof combined.backgroundFill === 'string' && combined.backgroundFill.length > 0
+        ? combined.backgroundFill
+        : '#000000',
+    backgroundOpacity: Math.max(0, Math.min(1, finite(combined.backgroundOpacity, 0))),
+    backgroundPaddingPx: Math.max(0, finite(combined.backgroundPaddingPx, fontSizePx * 0.25)),
   };
+}
+
+export function itemPlainText(item: ItemEntity): string {
+  if (item.type === 'caption') {
+    const raw = (item as JsonObject).text;
+    return typeof raw === 'string' ? raw : '';
+  }
+  const paragraphs = (item as JsonObject).paragraphs;
+  if (!Array.isArray(paragraphs)) return '';
+  const first = paragraphs[0];
+  if (first === null || typeof first !== 'object' || Array.isArray(first)) return '';
+  const runs = (first as JsonObject).runs;
+  if (!Array.isArray(runs)) return '';
+  return runs
+    .map(run => {
+      if (run === null || typeof run !== 'object' || Array.isArray(run)) return '';
+      const text = (run as JsonObject).text;
+      return typeof text === 'string' ? text : '';
+    })
+    .join('');
+}
+
+export function itemStyleRecord(item: ItemEntity): JsonObject {
+  if (item.type === 'caption') return record((item as JsonObject).style);
+  const paragraphs = (item as JsonObject).paragraphs;
+  const first =
+    Array.isArray(paragraphs) && paragraphs[0] !== null && typeof paragraphs[0] === 'object'
+      ? record(paragraphs[0])
+      : {};
+  const runs = Array.isArray(first.runs) ? first.runs : [];
+  const run =
+    runs[0] !== null && typeof runs[0] === 'object' && !Array.isArray(runs[0])
+      ? record(runs[0])
+      : {};
+  return { ...record(first.style), ...record(run.style) };
+}
+
+export function readItemTextStyle(item: ItemEntity): TextStyle {
+  return readStyle(itemStyleRecord(item));
 }
 
 function canvasFont(style: TextStyle): string {
@@ -221,7 +314,31 @@ function spanPaintY(line: LaidLine, style: TextStyle): number {
   return line.y + Math.max(0, (line.height - style.lineHeightPx) / 2);
 }
 
+interface CachedInkBox {
+  readonly width: number;
+  readonly height: number;
+  readonly box: TextBox;
+}
+
+/**
+ * Laying out ink lines runs grapheme segmentation over the whole string, and a
+ * program-monitor drag asks for the same box several times per pointer move.
+ * Committed Projects are frozen and structurally shared, so an unchanged Item
+ * keeps its object identity across revisions and can key the cache directly.
+ */
+const inkBoxCache = new WeakMap<ItemEntity, CachedInkBox>();
+
 export function textInkBox(item: ItemEntity, format: TextFormat): TextBox {
+  const cached = inkBoxCache.get(item);
+  if (cached !== undefined && cached.width === format.width && cached.height === format.height) {
+    return cached.box;
+  }
+  const box = measureTextInkBox(item, format);
+  inkBoxCache.set(item, { width: format.width, height: format.height, box });
+  return box;
+}
+
+function measureTextInkBox(item: ItemEntity, format: TextFormat): TextBox {
   const layout = readLayoutBox(item, format);
   const lines = layoutInkLines(item, format);
   if (lines.length === 0) {
@@ -236,10 +353,14 @@ export function textInkBox(item: ItemEntity, format: TextFormat): TextBox {
   };
   let pad = 1;
   let fontSizePx = 0;
+  let backgroundPad = 0;
   for (const line of lines) {
     for (const span of line.spans) {
       pad = Math.max(pad, span.style.strokeWidthPx);
       fontSizePx = Math.max(fontSizePx, span.style.fontSizePx);
+      if (span.style.backgroundOpacity > 0.001) {
+        backgroundPad = Math.max(backgroundPad, span.style.backgroundPaddingPx);
+      }
       const y = spanPaintY(line, span.style);
       if (span.style.direction === 'rtl') {
         const advance = tokenAdvance(span.text, span.style);
@@ -270,12 +391,13 @@ export function textInkBox(item: ItemEntity, format: TextFormat): TextBox {
     const size = Math.max(24, Math.min(layout.width, layout.height, 48));
     return { x: layout.x, y: layout.y, width: size, height: size };
   }
-  const leftPad = Math.max(pad, fontSizePx * 0.14);
+  const inkPad = Math.max(pad, backgroundPad);
+  const leftPad = Math.max(inkPad, fontSizePx * 0.14);
   return {
     x: bounds.x0 - leftPad,
-    y: bounds.y0 - pad,
-    width: Math.max(1, bounds.x1 - bounds.x0 + leftPad + pad),
-    height: Math.max(1, bounds.y1 - bounds.y0 + pad * 2),
+    y: bounds.y0 - inkPad,
+    width: Math.max(1, bounds.x1 - bounds.x0 + leftPad + inkPad),
+    height: Math.max(1, bounds.y1 - bounds.y0 + inkPad * 2),
   };
 }
 

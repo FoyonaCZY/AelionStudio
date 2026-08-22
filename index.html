@@ -80,50 +80,94 @@
 
     <div class="studio" id="studio" hidden>
       <header class="menubar">
-        <div class="brand">Aelion Studio</div>
-        <nav class="menus">
-          <details>
-            <summary>文件</summary>
-            <div class="menu">
-              <button type="button" data-cmd="projects">全部项目</button>
-              <button type="button" data-cmd="new">新建工程…</button>
-              <button type="button" data-cmd="import">导入媒体…</button>
-              <button type="button" data-cmd="import-url">从 URL 导入…</button>
-              <button type="button" data-cmd="import-opfs">绑定 OPFS</button>
-              <button type="button" data-cmd="save">保存草稿</button>
-              <button type="button" data-cmd="export-json">导出 Project JSON</button>
-            </div>
-          </details>
-          <details>
-            <summary>编辑</summary>
-            <div class="menu">
-              <button type="button" data-cmd="undo">撤销 <kbd>Ctrl+Z</kbd></button>
-              <button type="button" data-cmd="redo">重做 <kbd>Ctrl+Y</kbd></button>
-              <button type="button" data-cmd="split">分割 <kbd>S</kbd></button>
-              <button type="button" data-cmd="delete">删除 <kbd>Del</kbd></button>
-              <button type="button" data-cmd="ripple-delete">波纹删除</button>
-            </div>
-          </details>
-          <details>
-            <summary>时间线</summary>
-            <div class="menu">
-              <button type="button" data-cmd="add-v">添加视频轨</button>
-              <button type="button" data-cmd="add-a">添加音频轨</button>
-              <button type="button" data-cmd="add-c">添加字幕轨</button>
-              <button type="button" data-cmd="marker">在播放头打点 <kbd>M</kbd></button>
-            </div>
-          </details>
-          <details>
-            <summary>窗口</summary>
-            <div class="menu">
-              <button type="button" data-cmd="diagnostics">诊断报告</button>
-              <button type="button" data-cmd="capability">能力预检</button>
-              <button type="button" data-cmd="shortcuts">快捷键</button>
-            </div>
-          </details>
-        </nav>
+        <div class="menubar-left">
+          <button
+            type="button"
+            class="icon-btn menubar-back"
+            data-cmd="projects"
+            title="返回项目"
+            aria-label="返回项目"
+          >
+            <svg class="ico" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M10 3.4 5.2 8 10 12.6"
+              />
+            </svg>
+          </button>
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 16 16" width="18" height="18">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M3.1 13 8 3.6 12.9 13"
+                />
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linecap="round"
+                  d="M5.35 9.2h5.3"
+                />
+              </svg>
+            </span>
+            <span class="brand-name">Aelion Studio</span>
+          </div>
+          <span class="menubar-sep" aria-hidden="true"></span>
+          <nav class="menus">
+            <details>
+              <summary>文件</summary>
+              <div class="menu">
+                <button type="button" data-cmd="projects">全部项目</button>
+                <button type="button" data-cmd="new">新建工程…</button>
+                <button type="button" data-cmd="import">导入媒体…</button>
+                <button type="button" data-cmd="import-url">从 URL 导入…</button>
+                <button type="button" data-cmd="import-opfs">绑定 OPFS</button>
+                <button type="button" data-cmd="save">保存草稿</button>
+                <button type="button" data-cmd="export-json">导出 Project JSON</button>
+              </div>
+            </details>
+            <details>
+              <summary>编辑</summary>
+              <div class="menu">
+                <button type="button" data-cmd="undo">撤销 <kbd>Ctrl+Z</kbd></button>
+                <button type="button" data-cmd="redo">重做 <kbd>Ctrl+Y</kbd></button>
+                <button type="button" data-cmd="split">分割 <kbd>S</kbd></button>
+                <button type="button" data-cmd="delete">删除 <kbd>Del</kbd></button>
+                <button type="button" data-cmd="ripple-delete">波纹删除</button>
+              </div>
+            </details>
+            <details>
+              <summary>时间线</summary>
+              <div class="menu">
+                <button type="button" data-cmd="add-v">添加视频轨</button>
+                <button type="button" data-cmd="add-a">添加音频轨</button>
+                <button type="button" data-cmd="add-c">添加字幕轨</button>
+                <button type="button" data-cmd="marker">在播放头打点 <kbd>M</kbd></button>
+              </div>
+            </details>
+            <details>
+              <summary>窗口</summary>
+              <div class="menu">
+                <button type="button" data-cmd="diagnostics">诊断报告</button>
+                <button type="button" data-cmd="capability">能力预检</button>
+                <button type="button" data-cmd="shortcuts">快捷键</button>
+              </div>
+            </details>
+          </nav>
+        </div>
         <div class="menubar-status" id="project-title">未命名工程</div>
-        <button type="button" class="export-launch" data-cmd="export">导出</button>
+        <div class="menubar-right">
+          <button type="button" class="export-launch" data-cmd="export">导出</button>
+        </div>
       </header>
 
       <main class="workspace">
@@ -324,7 +368,7 @@
                 id="tl-snap"
                 class="on"
                 data-act="snap"
-                title="吸附"
+                title="吸附（时间线、画面居中与 90° 旋转）"
                 aria-label="吸附"
                 aria-pressed="true"
               >
@@ -485,7 +529,7 @@
 
       <footer class="statusbar">
         <span class="dot" id="status-dot"></span>
-        <span id="status">正在启动会话…</span>
+        <span id="status">正在启动…</span>
         <span class="grow"></span>
         <span id="backend">—</span>
         <span id="revision">rev —</span>
@@ -529,29 +573,73 @@
       </form>
     </dialog>
 
-    <dialog id="dialog-export" class="modal wide">
+    <dialog id="dialog-export" class="modal export-modal">
       <form method="dialog">
-        <h2>导出</h2>
-        <label
-          >格式
-          <select id="export-profile">
-            <option value="mp4-h264-aac">MP4 · H.264 / AAC</option>
-            <option value="webm-vp9-opus">WebM · VP9 / Opus</option>
-            <option value="mp4-av1-aac">MP4 · AV1 / AAC</option>
-            <option value="mp4-hevc-aac">MP4 · HEVC / AAC</option>
-            <option value="audio-wav">WAV · PCM</option>
-            <option value="still-png">当前帧 PNG</option>
-            <option value="still-jpeg">当前帧 JPEG</option>
-            <option value="still-webp">当前帧 WebP</option>
-            <option value="animated-gif">GIF</option>
-          </select>
-        </label>
-        <label>视频码率 kbps<input id="v-bitrate" type="number" value="8000" /></label>
-        <label>音频码率 kbps<input id="a-bitrate" type="number" value="192" /></label>
-        <p id="export-preflight" class="preflight">尚未预检</p>
-        <div class="progress"><span id="export-progress"></span></div>
+        <header class="modal-head">
+          <div>
+            <h2>导出</h2>
+            <p class="modal-sub">将当前时间线合成为文件</p>
+          </div>
+          <button type="submit" class="modal-close" value="cancel" aria-label="关闭">
+            <svg class="ico" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                d="M4.2 4.2 11.8 11.8M11.8 4.2 4.2 11.8"
+              />
+            </svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span>封装格式</span>
+            <select id="export-profile">
+              <optgroup label="视频">
+                <option value="mp4-h264-aac">MP4 · H.264 / AAC</option>
+                <option value="webm-vp9-opus">WebM · VP9 / Opus</option>
+                <option value="mp4-av1-aac">MP4 · AV1 / AAC</option>
+                <option value="mp4-hevc-aac">MP4 · HEVC / AAC</option>
+              </optgroup>
+              <optgroup label="音频">
+                <option value="audio-wav">WAV · PCM</option>
+              </optgroup>
+              <optgroup label="图像">
+                <option value="still-png">当前帧 PNG</option>
+                <option value="still-jpeg">当前帧 JPEG</option>
+                <option value="still-webp">当前帧 WebP</option>
+                <option value="animated-gif">GIF</option>
+              </optgroup>
+            </select>
+          </label>
+          <div class="field-row" id="export-bitrate-row">
+            <label class="field">
+              <span>视频码率</span>
+              <span class="input-suffix">
+                <input id="v-bitrate" type="number" min="100" step="100" value="8000" />
+                <span>kbps</span>
+              </span>
+            </label>
+            <label class="field">
+              <span>音频码率</span>
+              <span class="input-suffix">
+                <input id="a-bitrate" type="number" min="32" step="32" value="192" />
+                <span>kbps</span>
+              </span>
+            </label>
+          </div>
+          <div id="export-status" class="export-status" data-state="idle">
+            <span class="export-status-dot" aria-hidden="true"></span>
+            <p id="export-preflight" class="preflight">尚未预检</p>
+          </div>
+          <div id="export-progress-track" class="progress" hidden>
+            <span id="export-progress"></span>
+          </div>
+        </div>
         <menu>
           <button type="button" id="export-preflight-btn">预检</button>
+          <span class="grow"></span>
           <button type="button" id="export-cancel" hidden>取消</button>
           <button value="cancel">关闭</button>
           <button type="button" id="export-start" class="primary">开始导出</button>

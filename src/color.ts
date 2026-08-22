@@ -15,6 +15,19 @@ function linearize(value: number): number {
   return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
 }
 
+export function cssHex(value: string | undefined, fallback = '#ffffff'): string {
+  if (value === undefined) return fallback;
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/u.test(trimmed)) return `#${trimmed.slice(1).toLowerCase()}`;
+  if (/^#[0-9a-fA-F]{3}$/u.test(trimmed)) {
+    const r = trimmed[1] ?? '0';
+    const g = trimmed[2] ?? '0';
+    const b = trimmed[3] ?? '0';
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return fallback;
+}
+
 export function parseHexColor(hex: string): JsonObject {
   if (!/^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/u.test(hex)) {
     throw new TypeError('color must be #RRGGBB or #RRGGBBAA');

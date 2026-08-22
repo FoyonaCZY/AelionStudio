@@ -141,6 +141,7 @@ export class EditorEngine {
   public readonly filmstrips = new Map<string, string>();
   readonly #filmstripKeys = new Map<string, string>();
   #filmstripTail: Promise<void> = Promise.resolve();
+  #filmstripAbort = new AbortController();
   readonly #store = new IndexedDbProjectRevisionStore({ databaseName: STUDIO_DB });
   #materials: RuntimeMaterialRegistry | undefined;
   #uninstallMaterials: (() => void) | undefined;
@@ -148,6 +149,7 @@ export class EditorEngine {
   #interactive: AelionInteractiveEdit | undefined;
   #onChange: (() => void) | undefined;
   #onError: ((message: string) => void) | undefined;
+  #onPreviewReady: (() => void) | undefined;
   #onPreviewPointer: ((event: PreviewCanvasPointerEvent) => void) | undefined;
   #quality: PreviewCanvasQuality = 'adaptive';
 
@@ -288,6 +290,10 @@ export class EditorEngine {
     this.#onPreviewPointer = handler;
   }
 
+  public setPreviewReadyHandler(handler: (() => void) | undefined): void {
+    this.#onPreviewReady = handler;
+  }
+
   public get renderDurationUs(): number {
     return this.session?.getSnapshot().renderIr?.durationUs ?? 0;
   }
@@ -319,6 +325,7 @@ export class EditorEngine {
       throw new Error('时间线是空的，先放入素材或图层后再播放');
     }
     const playheadUs = timeUs < 0 || timeUs >= durationUs ? 0 : timeUs;
+    this.abortBackgroundFilmstrips();
     await session.player.seek(playheadUs);
     await session.player.play();
     return 'playing';
@@ -752,6 +759,11 @@ export class EditorEngine {
     );
   }
 
+  public abortBackgroundFilmstrips(): void {
+    this.#filmstripAbort.abort(new DOMException('Playback started', 'AbortError'));
+    this.#filmstripAbort = new AbortController();
+  }
+
   public async ensureFilmstrip(item: ItemEntity): Promise<void> {
     const pending = this.#filmstripTail.then(() => this.#renderFilmstrip(item));
     this.#filmstripTail = pending.then(
@@ -762,11 +774,13 @@ export class EditorEngine {
   }
 
   async #renderFilmstrip(item: ItemEntity): Promise<void> {
+    if (this.session?.player.state === 'playing') return;
     if ((item.type !== 'video' && item.type !== 'image') || this.media === undefined) return;
     const key = this.#filmstripKey(item);
     if (key === undefined || this.hasCurrentFilmstrip(item)) return;
     const ref = itemMediaRef(item);
     if (ref === undefined) return;
+    const signal = this.#filmstripAbort.signal;
     const tileCount =
       item.type === 'image'
         ? 1
@@ -774,13 +788,15 @@ export class EditorEngine {
     const frames: VideoFrame[] = [];
     try {
       for (let index = 0; index < tileCount; index += 1) {
+        if (signal.aborted) return;
         const timeUs =
           ref.startUs +
           Math.floor(((index + 0.5) / tileCount) * Math.max(1, item.range.durationUs));
         frames.push(
-          await this.media.frameAt(ref.assetId, ref.streamIndex, Math.max(0, timeUs), undefined, {
+          await this.media.frameAt(ref.assetId, ref.streamIndex, Math.max(0, timeUs), signal, {
             purpose: 'preview',
             maxDimension: 96,
+            transient: true,
           }),
         );
       }
@@ -907,6 +923,7 @@ export class EditorEngine {
       fit: 'contain',
       background: '#0b0b0b',
       onError: error => onError(errorMessage(error, '预览失败')),
+      onFrame: () => this.#onPreviewReady?.(),
       onPointer: event => this.#onPreviewPointer?.(event),
     });
   }
@@ -980,6 +997,7 @@ export class EditorEngine {
       const frame = await this.media.frameAt(assetId, 0, 0, undefined, {
         purpose: 'preview',
         maxDimension: 160,
+        transient: true,
       });
       const canvas = document.createElement('canvas');
       canvas.width = Math.max(1, Math.round(frame.displayWidth / 2));
