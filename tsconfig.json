@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist/types",
+    "tsBuildInfoFile": "dist/types/.tsbuildinfo",
+    "types": ["vite/client"]
+  },
+  "include": ["src/**/*.ts", "vite.config.ts"],
+  "references": [
+    { "path": "../../packages/sdk" },
+    { "path": "../../packages/export" },
+    { "path": "../../packages/vite-plugin" }
+  ]
+}
