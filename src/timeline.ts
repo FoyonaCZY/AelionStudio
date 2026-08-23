@@ -37,6 +37,8 @@ export interface TimelineDragPreview {
    * land is what the insert line and the displaced neighbours are for.
    */
   readonly offsetPx: { readonly x: number; readonly y: number };
+  /** False when the pointer is somewhere the drop has been refused. */
+  readonly valid: boolean;
 }
 
 /**
@@ -602,24 +604,31 @@ export function applyTimelineDrag(options: {
     // the last rebuild predates the gesture and cannot have set it.
     node.classList.toggle('dragging', id === drag.itemId);
     if (id === drag.itemId) {
+      node.classList.toggle('invalid', !drag.valid);
       node.style.transform = `translate(${drag.offsetPx.x.toFixed(2)}px, ${drag.offsetPx.y.toFixed(2)}px)`;
       continue;
     }
+    // A refused drop must not leave neighbours standing aside for it: they go
+    // back to where they really are, so the only thing moving is the clip in
+    // hand, and it is visibly marked as having nowhere to land.
     const base = Number(node.dataset.left ?? '0');
-    const dx = left - base;
+    const dx = drag.valid ? left - base : 0;
     node.style.transform = Math.abs(dx) < 0.01 ? '' : `translateX(${dx.toFixed(2)}px)`;
   }
   const line = root.querySelector<HTMLElement>('.tl-insert');
   const atUs = drag.plan.insertAtUs;
-  if (line !== null && atUs !== undefined) {
-    line.style.left = `${(usToX(atUs, view) + TRACK_HEADER_WIDTH).toFixed(2)}px`;
+  if (line !== null) {
+    line.style.display = drag.valid && atUs !== undefined ? '' : 'none';
+    if (drag.valid && atUs !== undefined) {
+      line.style.left = `${(usToX(atUs, view) + TRACK_HEADER_WIDTH).toFixed(2)}px`;
+    }
   }
 }
 
 /** Drops every drag offset, for a gesture that ended without changing anything. */
 export function clearTimelineDrag(root: HTMLElement): void {
   for (const node of root.querySelectorAll<HTMLElement>('.clip[data-item]')) {
-    node.classList.remove('dragging');
+    node.classList.remove('dragging', 'invalid');
     node.style.transform = '';
     const base = node.dataset.left;
     if (base !== undefined) node.style.left = `${base}px`;

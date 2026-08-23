@@ -271,6 +271,69 @@ describe('planMagneticMove with linked audio', () => {
   });
 });
 
+describe('planMagneticMove refuses to stack clips', () => {
+  it('rejects a move whose linked audio would land on its neighbour', () => {
+    // The reported case: a gap on the storyline, and audio that runs longer
+    // than the video it belongs to. Packing the video says nothing about the
+    // lengths below it, so dragging the last clip left would slide its audio
+    // straight through the audio before it.
+    const uneven = project({
+      V1: {
+        kind: 'visual',
+        items: [
+          { id: 'v1', startUs: 0, durationUs: 3 * SECOND, linkGroupId: 'g1' },
+          { id: 'gap', startUs: 3 * SECOND, durationUs: 5 * SECOND },
+          { id: 'v2', startUs: 8 * SECOND, durationUs: 4 * SECOND, linkGroupId: 'g2' },
+        ],
+      },
+      A1: {
+        kind: 'audio',
+        items: [
+          { id: 'a1', startUs: 0, durationUs: 3 * SECOND, linkGroupId: 'g1' },
+          // Audio runs past the video cut it belongs to.
+          { id: 'a2', startUs: 4 * SECOND, durationUs: 8 * SECOND, linkGroupId: 'g2' },
+        ],
+      },
+    });
+    const plan = planMagneticMove(uneven, {
+      primaryTrackId: 'V1',
+      movedItemId: 'v2',
+      targetTrackId: 'V1',
+      targetStartUs: 0,
+      followLinks: true,
+    });
+    expect(plan).toBeUndefined();
+  });
+
+  it('still allows the same move with linking off', () => {
+    const uneven = project({
+      V1: {
+        kind: 'visual',
+        items: [
+          { id: 'v1', startUs: 0, durationUs: 3 * SECOND, linkGroupId: 'g1' },
+          { id: 'v2', startUs: 3 * SECOND, durationUs: 4 * SECOND, linkGroupId: 'g2' },
+        ],
+      },
+      A1: {
+        kind: 'audio',
+        items: [
+          { id: 'a1', startUs: 0, durationUs: 3 * SECOND, linkGroupId: 'g1' },
+          { id: 'a2', startUs: 3 * SECOND, durationUs: 8 * SECOND, linkGroupId: 'g2' },
+        ],
+      },
+    });
+    const plan = planMagneticMove(uneven, {
+      primaryTrackId: 'V1',
+      movedItemId: 'v2',
+      targetTrackId: 'V1',
+      targetStartUs: 0,
+      followLinks: false,
+    });
+    // Video alone repacks cleanly; the audio simply stays where it was.
+    expect(starts(plan).v2?.startUs).toBe(0);
+  });
+});
+
 describe('storylineHoles', () => {
   it('reports only interior holes, measured from the first clip', () => {
     const holed = project({

@@ -182,6 +182,8 @@ interface Gesture {
   plan?: MagneticPlan;
   /** How far the ghost has been carried, in timeline pixels. */
   ghostOffsetPx?: { x: number; y: number };
+  /** Whether the position under the pointer right now can actually be dropped. */
+  planValid?: boolean;
 }
 
 export class Studio {
@@ -434,6 +436,7 @@ export class Studio {
                   itemId: moveGesture.itemId,
                   plan: dragPlan,
                   offsetPx: moveGesture.ghostOffsetPx ?? { x: 0, y: 0 },
+                  valid: moveGesture.planValid !== false,
                 },
               }),
         });
@@ -451,6 +454,7 @@ export class Studio {
             itemId: moveGesture.itemId,
             plan: dragPlan,
             offsetPx: moveGesture.ghostOffsetPx ?? { x: 0, y: 0 },
+            valid: moveGesture.planValid !== false,
           },
         });
       }
@@ -2019,6 +2023,9 @@ export class Studio {
       targetStartUs,
       followLinks: this.view.linkedEdit,
     });
+    // A refused position keeps the last good plan for reference but must not be
+    // committed: releasing there would drop the clip somewhere the pointer is not.
+    gesture.planValid = plan !== undefined;
     if (plan !== undefined) gesture.plan = plan;
     // Measured in content pixels against the committed position, so the ghost
     // keeps tracking the pointer even while the timeline auto-scrolls.
@@ -2044,6 +2051,12 @@ export class Studio {
     if (plan === undefined || project === null || live === undefined) {
       this.engine.endGesture(true);
       clearTimelineDrag(this.#els.timeline);
+      return;
+    }
+    if (gesture.planValid !== true) {
+      this.engine.endGesture(true);
+      clearTimelineDrag(this.#els.timeline);
+      this.setStatus('这里放不下：联动的音频会和相邻片段重叠', true);
       return;
     }
     if (!placementsChange(project, plan.placements)) {

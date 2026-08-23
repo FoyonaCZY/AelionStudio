@@ -1807,3 +1807,12 @@ kbd {
   font-style: italic;
   opacity: 0.75;
 }
+
+/* Nowhere to land: the clip stays in hand and nothing gets shoved aside. */
+.timeline .clip.dragging.invalid {
+  opacity: 0.55;
+  box-shadow:
+    0 10px 24px #000000aa,
+    0 0 0 1px #e8564c;
+  cursor: no-drop;
+}

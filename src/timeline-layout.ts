@@ -410,7 +410,7 @@ function insertionIndex(items: readonly PlannedItem[], targetStartUs: number): n
 function carryLinkedPartners(
   project: AelionProject,
   placements: Map<string, { readonly trackId: string; readonly startUs: number }>,
-): void {
+): boolean {
   for (const [id, at] of [...placements]) {
     const item = project.items[id];
     const groupId = item?.linkGroupId;
@@ -421,12 +421,61 @@ function carryLinkedPartners(
       if (memberId === id || placements.has(memberId)) continue;
       const member = project.items[memberId];
       if (member === undefined) continue;
-      placements.set(memberId, {
-        trackId: member.trackId,
-        startUs: Math.max(0, member.range.startUs + deltaUs),
-      });
+      const startUs = member.range.startUs + deltaUs;
+      // Clamping a partner at zero would hold it still while its video kept
+      // moving, which is exactly the desync this is here to prevent. A move that
+      // cannot keep the pair together is refused instead.
+      if (startUs < 0) return false;
+      placements.set(memberId, { trackId: member.trackId, startUs });
     }
   }
+  return true;
+}
+
+/**
+ * Whether the resolved layout stacks two Items on one track.
+ *
+ * Only the storyline is packed, so nothing otherwise stops a linked partner from
+ * landing on top of its neighbour -- and it will, whenever audio is longer than
+ * the video it belongs to, because packing the video says nothing about the
+ * lengths below it. The schema permits overlap, so this is Studio's rule, and
+ * refusing the move is the honest outcome: the alternative is either silently
+ * desyncing the pair or overwriting audio the drag never mentioned.
+ *
+ * Only tracks the plan touches are examined, so a project that already contains
+ * an overlap elsewhere stays draggable.
+ */
+function stacksOnAnyTrack(
+  project: AelionProject,
+  placements: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+): boolean {
+  const touched = new Set<string>();
+  for (const [id, at] of placements) {
+    touched.add(at.trackId);
+    const item = project.items[id];
+    if (item !== undefined) touched.add(item.trackId);
+  }
+  const lanes = new Map<string, { startUs: number; endUs: number }[]>();
+  for (const item of Object.values(project.items)) {
+    const at = placements.get(item.id);
+    const trackId = at?.trackId ?? item.trackId;
+    if (!touched.has(trackId)) continue;
+    const startUs = at?.startUs ?? item.range.startUs;
+    const span = { startUs, endUs: startUs + item.range.durationUs };
+    const lane = lanes.get(trackId);
+    if (lane === undefined) lanes.set(trackId, [span]);
+    else lane.push(span);
+  }
+  for (const lane of lanes.values()) {
+    lane.sort((left, right) => left.startUs - right.startUs);
+    for (let index = 1; index < lane.length; index += 1) {
+      const previous = lane[index - 1];
+      const current = lane[index];
+      if (previous === undefined || current === undefined) continue;
+      if (current.startUs < previous.endUs) return true;
+    }
+  }
+  return false;
 }
 
 export function planMagneticMove(
@@ -479,7 +528,10 @@ export function planMagneticMove(
     }
   }
 
-  if (options.followLinks === true) carryLinkedPartners(project, placements);
+  if (options.followLinks === true && !carryLinkedPartners(project, placements)) {
+    return undefined;
+  }
+  if (stacksOnAnyTrack(project, placements)) return undefined;
 
   return {
     placements,
