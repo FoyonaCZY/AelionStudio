@@ -10,22 +10,59 @@ import { encodeHex, readLinearColor } from './color.js';
 import {
   clipLabel,
   contentDurationUs,
+  isGapItem,
   itemMediaRef,
   orderedTracks,
   transitionLabel,
 } from './project.js';
+import type { MagneticPlan } from './timeline-layout.js';
 import { formatTimecode, frameDurationUs, safeText } from './format.js';
 import { icon, type IconName } from './icons.js';
-import {
-  MIN_TIMELINE_US,
-  SNAP_PIXELS,
-  TRACK_HEADER_WIDTH,
-  type ViewState,
-} from './view-state.js';
+import { MIN_TIMELINE_US, SNAP_PIXELS, TRACK_HEADER_WIDTH, type ViewState } from './view-state.js';
 
 export { TRACK_HEADER_WIDTH } from './view-state.js';
 
 const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
+
+/** What an in-flight drag wants drawn, before any of it has been committed. */
+export interface TimelineDragPreview {
+  readonly itemId: string;
+  readonly plan: MagneticPlan;
+}
+
+/**
+ * Groups Items by the track they should be drawn on, honouring a drag preview.
+ *
+ * During a drag the planned layout differs from the committed one, and clips can
+ * belong to a different lane than the Project says. Resolving that here keeps
+ * every caller downstream working from a single, already-reconciled view.
+ */
+function itemsByTrack(
+  project: AelionProject | null,
+  drag: TimelineDragPreview | undefined,
+): Map<string, { readonly item: ItemEntity; readonly startUs: number }[]> {
+  const byTrack = new Map<string, { item: ItemEntity; startUs: number }[]>();
+  if (project === null) return byTrack;
+  for (const track of Object.values(project.tracks)) byTrack.set(track.id, []);
+  for (const track of Object.values(project.tracks)) {
+    for (const id of track.itemIds) {
+      const item = project.items[id];
+      if (item === undefined) continue;
+      const planned = drag?.plan.placements.get(id);
+      const trackId = planned?.trackId ?? item.trackId;
+      const startUs = planned?.startUs ?? item.range.startUs;
+      const lane = byTrack.get(trackId);
+      if (lane === undefined) byTrack.set(trackId, [{ item, startUs }]);
+      else lane.push({ item, startUs });
+    }
+  }
+  for (const lane of byTrack.values()) {
+    lane.sort(
+      (left, right) => left.startUs - right.startUs || left.item.id.localeCompare(right.item.id),
+    );
+  }
+  return byTrack;
+}
 
 export interface WaveformPeaks {
   readonly sampleRate?: number;
@@ -60,9 +97,10 @@ function contentXToUs(x: number, view: ViewState): number {
   return Math.max(0, Math.round((x / view.pixelsPerSecond) * 1_000_000));
 }
 
-function sequenceFrameRate(
-  project: AelionProject | null,
-): { readonly numerator: number; readonly denominator: number } {
+function sequenceFrameRate(project: AelionProject | null): {
+  readonly numerator: number;
+  readonly denominator: number;
+} {
   if (project === null) return { numerator: 30, denominator: 1 };
   const format = project.sequences[project.settings.defaultSequenceId]?.format.frameRate;
   if (format === undefined) return { numerator: 30, denominator: 1 };
@@ -155,7 +193,12 @@ export function snapTime(
   if (!view.snap || project === null) return Math.max(0, timeUs);
   const thresholdUs = Math.round((SNAP_PIXELS / view.pixelsPerSecond) * 1_000_000);
   const frameRate = sequenceFrameRate(project);
-  const candidates = [0, view.currentTimeUs, ...extra, ...nearestTickTimes(timeUs, view, frameRate)];
+  const candidates = [
+    0,
+    view.currentTimeUs,
+    ...extra,
+    ...nearestTickTimes(timeUs, view, frameRate),
+  ];
   if (options?.includeItems !== false) {
     for (const item of Object.values(project.items)) {
       candidates.push(item.range.startUs, item.range.startUs + item.range.durationUs);
@@ -266,7 +309,8 @@ function transitionBlock(
   const left = (transition.range.startUs / 1_000_000) * view.pixelsPerSecond;
   const width = Math.max(18, (transition.range.durationUs / 1_000_000) * view.pixelsPerSecond);
   const selected = transition.id === view.selectedTransitionId;
-  const name = project === null || project === undefined ? '转场' : transitionLabel(project, transition);
+  const name =
+    project === null || project === undefined ? '转场' : transitionLabel(project, transition);
   return `<button type="button" class="tl-transition${selected ? ' selected' : ''}" data-transition="${safeText(transition.id)}" data-track="${safeText(track.id)}" style="left:${left.toFixed(2)}px;width:${width.toFixed(2)}px;height:${trackHeight - 8}px" title="${safeText(name)}">
     <i class="clip-handle start" data-edge="start"></i>
     <span class="clip-label">${safeText(name)}</span>
@@ -274,8 +318,22 @@ function transitionBlock(
   </button>`;
 }
 
+/**
+ * The line showing where a storyline drop will land.
+ *
+ * Only drawn for a reorder: a free drop onto an upper track lands exactly
+ * where the ghost already sits, so a second indicator would say nothing.
+ */
+function insertLineHtml(drag: TimelineDragPreview | undefined, view: ViewState): string {
+  const atUs = drag?.plan.insertAtUs;
+  if (atUs === undefined) return '';
+  const x = usToX(atUs, view) + TRACK_HEADER_WIDTH;
+  return `<div class="tl-insert" style="left:${x.toFixed(2)}px"></div>`;
+}
+
 function clipClass(item: ItemEntity, selected: boolean, hasFilm: boolean): string {
   const parts = ['clip', `clip-${item.type}`];
+  if (isGapItem(item)) parts.push('clip-gap');
   if (selected) parts.push('selected');
   if (!item.enabled) parts.push('disabled');
   if (item.linkGroupId !== undefined) parts.push('linked');
@@ -312,10 +370,7 @@ function clipTint(item: ItemEntity): string | undefined {
   return undefined;
 }
 
-function peaksForClip(
-  result: WaveformPeaks,
-  item: ItemEntity,
-): WaveformPeaks['peaks'] {
+function peaksForClip(result: WaveformPeaks, item: ItemEntity): WaveformPeaks['peaks'] {
   const sampleRate = result.sampleRate;
   if (sampleRate === undefined || !Number.isFinite(sampleRate) || sampleRate <= 0) {
     return result.peaks;
@@ -364,11 +419,7 @@ function rulerHtml(
   frameRate: { numerator: number; denominator: number },
   widthPx?: number,
 ): string {
-  const width = Math.max(
-    800,
-    widthPx ?? 0,
-    (durationUs / 1_000_000) * view.pixelsPerSecond,
-  );
+  const width = Math.max(800, widthPx ?? 0, (durationUs / 1_000_000) * view.pixelsPerSecond);
   const ticks: string[] = [];
   const majorUs = rulerMajorStepUs(view.pixelsPerSecond, frameRate);
   let minorUs = rulerMinorStepUs(view.pixelsPerSecond, frameRate);
@@ -397,8 +448,11 @@ export function renderTimeline(options: {
   readonly waveforms: ReadonlyMap<string, WaveformPeaks>;
   readonly thumbs?: ReadonlyMap<string, string>;
   readonly filmstrips?: ReadonlyMap<string, string>;
+  readonly drag?: TimelineDragPreview;
 }): void {
   const { root, project, view } = options;
+  const drag = options.drag;
+  const laneItems = itemsByTrack(project, drag);
   const previousBody = root.querySelector('[data-role="body"]');
   const scrollTop = previousBody instanceof HTMLElement ? previousBody.scrollTop : 0;
   const thumbs = options.thumbs ?? EMPTY_URLS;
@@ -432,13 +486,10 @@ export function renderTimeline(options: {
       ${tracks
         .map(track => {
           const height = TRACK_HEIGHT[track.kind];
-          const items = track.itemIds.flatMap(id => {
-            const item = project?.items[id];
-            return item === undefined ? [] : [item];
-          });
+          const items = laneItems.get(track.id) ?? [];
           const clips = items
-            .map(item => {
-              const left = (item.range.startUs / 1_000_000) * view.pixelsPerSecond;
+            .map(({ item, startUs }) => {
+              const left = (startUs / 1_000_000) * view.pixelsPerSecond;
               const width = Math.max(6, (item.range.durationUs / 1_000_000) * view.pixelsPerSecond);
               const film = clipFilmUrl(item, thumbs, filmstrips);
               const tint = clipTint(item);
@@ -452,13 +503,12 @@ export function renderTimeline(options: {
                   : `<span class="clip-film" style="background-image:url('${safeText(film)}')"></span>`;
               const tintStyle = tint === undefined ? '' : `background:${safeText(tint)};`;
               const clipMarks = Object.values(project?.markers ?? {})
-                .filter(
-                  marker => marker.owner.type === 'item' && marker.owner.id === item.id,
-                )
+                .filter(marker => marker.owner.type === 'item' && marker.owner.id === item.id)
                 .map(marker => clipMarkerButton(marker, item, track.id, view))
                 .join('');
               const sizeClass = width < 16 ? ' tiny' : width < 28 ? ' narrow' : '';
-              return `${clipMarks}<button type="button" class="${clipClass(item, item.id === view.selectedItemId, film !== undefined)}${sizeClass}" data-item="${safeText(item.id)}" data-track="${safeText(track.id)}" style="left:${left.toFixed(2)}px;width:${width.toFixed(2)}px;height:${height - 8}px;${tintStyle}">
+              const dragClass = drag?.itemId === item.id ? ' dragging' : '';
+              return `${clipMarks}<button type="button" class="${clipClass(item, item.id === view.selectedItemId, film !== undefined)}${sizeClass}${dragClass}" data-item="${safeText(item.id)}" data-track="${safeText(track.id)}" data-left="${left.toFixed(2)}" style="left:${left.toFixed(2)}px;width:${width.toFixed(2)}px;height:${height - 8}px;${tintStyle}">
                 ${filmHtml}
                 <i class="clip-handle start" data-edge="start"></i>
                 <span class="clip-label">${safeText(clipLabel(item))}</span>
@@ -493,6 +543,7 @@ export function renderTimeline(options: {
         .join('')}
       </div>
     </div>
+    ${insertLineHtml(drag, view)}
     <div class="playhead" style="left:${playheadX.toFixed(2)}px"></div>
     ${markers
       .map(marker => {
@@ -508,6 +559,68 @@ export function renderTimeline(options: {
   syncTimelineViewport(root, view, project);
   const nextBody = root.querySelector('[data-role="body"]');
   if (nextBody instanceof HTMLElement) nextBody.scrollTop = scrollTop;
+}
+
+/**
+ * Moves clips to their previewed positions without rebuilding the timeline.
+ *
+ * This is what makes the drag animate. Rebuilding the markup would replace
+ * every node, and a transition needs the *same* element to interpolate from,
+ * so a drag updates the existing nodes in place: neighbours get a transform
+ * offset from their committed position and ease towards it, while the clip
+ * under the pointer is positioned outright so it never lags behind the cursor.
+ *
+ * On release the committed layout equals the previewed one, so the rebuild that
+ * follows paints the same geometry and the handover is invisible.
+ */
+export function applyTimelineDrag(options: {
+  readonly root: HTMLElement;
+  readonly project: AelionProject | null;
+  readonly view: ViewState;
+  readonly drag: TimelineDragPreview;
+}): void {
+  const { root, project, view, drag } = options;
+  const planned = new Map<string, { trackId: string; startUs: number }>();
+  for (const [trackId, lane] of itemsByTrack(project, drag)) {
+    for (const entry of lane) planned.set(entry.item.id, { trackId, startUs: entry.startUs });
+  }
+  for (const node of root.querySelectorAll<HTMLElement>('.clip[data-item]')) {
+    const id = node.dataset.item;
+    const at = id === undefined ? undefined : planned.get(id);
+    if (at === undefined) continue;
+    const left = (at.startUs / 1_000_000) * view.pixelsPerSecond;
+    if (id === drag.itemId) {
+      // The dragged clip is placed outright, including onto another lane.
+      if (node.dataset.track !== at.trackId) {
+        const lane = root.querySelector<HTMLElement>(
+          `.track-lane[data-track="${CSS.escape(at.trackId)}"]`,
+        );
+        if (lane !== null) lane.append(node);
+        node.dataset.track = at.trackId;
+      }
+      node.style.transform = '';
+      node.style.left = `${left.toFixed(2)}px`;
+      continue;
+    }
+    const base = Number(node.dataset.left ?? '0');
+    const dx = left - base;
+    node.style.transform = Math.abs(dx) < 0.01 ? '' : `translateX(${dx.toFixed(2)}px)`;
+  }
+  const line = root.querySelector<HTMLElement>('.tl-insert');
+  const atUs = drag.plan.insertAtUs;
+  if (line !== null && atUs !== undefined) {
+    line.style.left = `${(usToX(atUs, view) + TRACK_HEADER_WIDTH).toFixed(2)}px`;
+  }
+}
+
+/** Drops every drag offset, for a gesture that ended without changing anything. */
+export function clearTimelineDrag(root: HTMLElement): void {
+  for (const node of root.querySelectorAll<HTMLElement>('.clip[data-item]')) {
+    node.classList.remove('dragging');
+    node.style.transform = '';
+    const base = node.dataset.left;
+    if (base !== undefined) node.style.left = `${base}px`;
+  }
 }
 
 export function syncTimelineViewport(

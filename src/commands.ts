@@ -34,6 +34,7 @@ import {
   probeSourceSize,
   readTransform,
   sequenceFormat,
+  type SequenceFormat,
   shapeItem,
   textItem,
   type VisualPatch,
@@ -50,14 +51,9 @@ import {
 } from './text-metrics.js';
 import {
   insertPolicyForMedia,
-  isRangeFreeOnTrack,
-  magnetStartOnTrack,
   newTrackAnchorId,
-  overlappingItemOnTrack,
-  packLeftRightSwap,
   resolveInsertPlacement,
-  settleAfterPackedPair,
-  shouldSwapOccupant,
+  storylineHoles,
   type ResolveInsertOptions,
 } from './timeline-layout.js';
 
@@ -184,11 +180,7 @@ export function removeTrack(engine: EditorEngine, trackId: string): void {
   );
 }
 
-export function realignLinkGroup(
-  engine: EditorEngine,
-  groupId: string,
-  anchorId: string,
-): void {
+export function realignLinkGroup(engine: EditorEngine, groupId: string, anchorId: string): void {
   const project = requireProject(engine);
   const group = project.linkGroups[groupId];
   const anchor = project.items[anchorId];
@@ -206,30 +198,6 @@ export function realignLinkGroup(
   }
   if (writes.size === 0) return;
   applyItemRelocations(engine, writes, '对齐联动');
-}
-
-export function moveLinkedMemberToTrack(
-  engine: EditorEngine,
-  itemId: string,
-  toTrackId: string,
-  historyGroup?: string,
-): boolean {
-  const project = requireProject(engine);
-  const item = project.items[itemId];
-  const dest = project.tracks[toTrackId];
-  if (item === undefined || dest === undefined || dest.locked) return false;
-  if (item.trackId === toTrackId || dest.kind !== itemTrackKind(item)) return false;
-  if (
-    !isRangeFreeOnTrack(project, toTrackId, item.range.startUs, item.range.durationUs, [item.id])
-  ) {
-    return false;
-  }
-  return applyItemRelocations(
-    engine,
-    new Map([[item.id, { trackId: toTrackId, startUs: item.range.startUs }]]),
-    '联动换轨',
-    historyGroup,
-  );
 }
 
 function takeInsertSlot(
@@ -1518,169 +1486,19 @@ function relocateItem(
   }
 }
 
-function itemTrackKind(item: ItemEntity): TrackEntity['kind'] {
-  return item.type === 'audio' ? 'audio' : item.type === 'caption' ? 'caption' : 'visual';
-}
-
-export type MoveItemResult =
-  | { readonly kind: 'swap'; readonly occupantId: string }
-  | { readonly kind: 'move' };
-
-/**
- * Move a clip under the pointer. Same-track swap packs the right clip onto the
- * left clip's in-point and seats the left clip immediately after it; later
- * clips shift only if they collide. Cross-track swap exchanges tracks and
- * leaves other clips' in/out alone.
- */
-export function moveItemAvoidingOverlap(
-  engine: EditorEngine,
-  options: {
-    readonly itemId: string;
-    readonly startUs: number;
-    readonly toTrackId?: string;
-    readonly fromTrackId?: string;
-    readonly fromStartUs?: number;
-    readonly reverseSwapId?: string;
-    readonly historyGroup?: string;
-  },
-): MoveItemResult | undefined {
-  const project = requireProject(engine);
-  const moved = project.items[options.itemId];
-  if (moved === undefined) return undefined;
-  const intendedStart = Math.max(0, Math.round(options.startUs));
-  const destTrackId = options.toTrackId ?? moved.trackId;
-  const destTrack = project.tracks[destTrackId];
-  const homeTrackId = options.fromTrackId ?? moved.trackId;
-  const homeStartUs = Math.max(0, Math.round(options.fromStartUs ?? moved.range.startUs));
-  if (destTrack === undefined || destTrack.locked || destTrack.kind !== itemTrackKind(moved)) {
-    return undefined;
-  }
-  const occupant = overlappingItemOnTrack(
-    project,
-    destTrackId,
-    intendedStart,
-    moved.range.durationUs,
-    [moved.id],
-  );
-  const homeTrack = project.tracks[homeTrackId];
-  const canSwap =
-    occupant !== undefined &&
-    homeTrack !== undefined &&
-    !homeTrack.locked &&
-    homeTrack.kind === itemTrackKind(occupant) &&
-    shouldSwapOccupant(
-      intendedStart,
-      moved.range.durationUs,
-      occupant.range.startUs,
-      occupant.range.durationUs,
-      occupant.id === options.reverseSwapId ? 0.25 : 0.5,
-    );
-
-  if (occupant === undefined || !canSwap) {
-    const nextStartUs =
-      occupant === undefined
-        ? intendedStart
-        : magnetStartOnTrack(project, destTrackId, intendedStart, moved.range.durationUs, [
-            moved.id,
-          ]);
-    if (nextStartUs === undefined) return undefined;
-    if (destTrackId === moved.trackId && nextStartUs === moved.range.startUs) return undefined;
-    const writes = new Map<string, { readonly trackId: string; readonly startUs: number }>([
-      [moved.id, { trackId: destTrackId, startUs: nextStartUs }],
-    ]);
-    if (!applyItemRelocations(engine, writes, '移动', options.historyGroup)) return undefined;
-    return { kind: 'move' };
-  }
-
-  const placed = new Map<string, { readonly trackId: string; readonly startUs: number }>();
-  if (homeTrackId === destTrackId) {
-    const movedIsLeft = homeStartUs <= occupant.range.startUs;
-    const left = movedIsLeft ? moved : occupant;
-    const right = movedIsLeft ? occupant : moved;
-    const leftStartUs = movedIsLeft ? homeStartUs : occupant.range.startUs;
-    const packed = packLeftRightSwap(leftStartUs, right.range.durationUs);
-    placed.set(right.id, { trackId: destTrackId, startUs: packed.rightStartUs });
-    placed.set(left.id, { trackId: destTrackId, startUs: packed.leftStartUs });
-    const pairEndUs = packed.leftStartUs + left.range.durationUs;
-    const writes = writesFromSettled(
-      project,
-      placed,
-      settleAfterPackedPair(
-        trackItemsAfterMove(project, destTrackId, placed),
-        new Set([left.id, right.id]),
-        packed.rightStartUs,
-        pairEndUs,
-      ),
-    );
-    if (!applyItemRelocations(engine, writes, '交换片段', options.historyGroup)) return undefined;
-    return { kind: 'swap', occupantId: occupant.id };
-  }
-
-  const exceptPair = [moved.id, occupant.id];
-  const incomingStart = magnetStartOnTrack(
-    project,
-    destTrackId,
-    intendedStart,
-    moved.range.durationUs,
-    exceptPair,
-  );
-  const occupantStart = magnetStartOnTrack(
-    project,
-    homeTrackId,
-    occupant.range.startUs,
-    occupant.range.durationUs,
-    exceptPair,
-  );
-  if (incomingStart === undefined || occupantStart === undefined) return undefined;
-  placed.set(moved.id, { trackId: destTrackId, startUs: incomingStart });
-  placed.set(occupant.id, { trackId: homeTrackId, startUs: occupantStart });
-  if (!applyItemRelocations(engine, placed, '交换片段', options.historyGroup)) return undefined;
-  return { kind: 'swap', occupantId: occupant.id };
-}
-
-function writesFromSettled(
-  project: AelionProject,
-  placed: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
-  settled: readonly { readonly id: string; readonly startUs: number }[],
-): Map<string, { readonly trackId: string; readonly startUs: number }> {
-  const writes = new Map(placed);
-  for (const entry of settled) {
-    const item = project.items[entry.id];
-    if (item === undefined) continue;
-    const nextTrackId = placed.get(entry.id)?.trackId ?? item.trackId;
-    if (item.range.startUs === entry.startUs && item.trackId === nextTrackId) continue;
-    writes.set(entry.id, { trackId: nextTrackId, startUs: entry.startUs });
-  }
-  return writes;
-}
-
+/** Writes a batch of Item moves as one edit, keeping transitions attached. */
 function applyItemRelocations(
   engine: EditorEngine,
   writes: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
   label: string,
-  historyGroup?: string,
 ): boolean {
   const project = requireProject(engine);
-  let changed = false;
-  for (const [id, next] of writes) {
-    const item = project.items[id];
-    if (item === undefined) continue;
-    if (item.trackId !== next.trackId || item.range.startUs !== next.startUs) changed = true;
-  }
-  if (!changed) return false;
+  if (!placementsChange(project, writes)) return false;
   requireSession(engine).transaction.edit(
     tx => {
-      for (const [id, next] of writes) {
-        const item = project.items[id];
-        if (item === undefined) continue;
-        relocateItem(tx, item, next.trackId, next.startUs);
-      }
-      syncTransitionsAfterMoves(tx, project, writes);
+      applyPlacementsIn(tx, project, writes);
     },
-    {
-      label,
-      ...(historyGroup === undefined ? {} : { historyGroup }),
-    },
+    { label },
   );
   return true;
 }
@@ -1733,83 +1551,132 @@ function syncTransitionsAfterMoves(
   }
 }
 
-function trackItemsAfterMove(
-  project: AelionProject,
+type EditTx = Parameters<EditCallback>[0];
+
+const DEFAULT_GAP_US = 1_000_000;
+
+function gapItem(
+  id: string,
   trackId: string,
-  placed: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
-): { readonly id: string; readonly startUs: number; readonly durationUs: number }[] {
-  const items: { readonly id: string; readonly startUs: number; readonly durationUs: number }[] =
-    [];
-  for (const item of Object.values(project.items)) {
-    const nextTrackId = placed.get(item.id)?.trackId ?? item.trackId;
-    if (nextTrackId !== trackId) continue;
-    items.push({
-      id: item.id,
-      startUs: placed.get(item.id)?.startUs ?? item.range.startUs,
-      durationUs: item.range.durationUs,
-    });
-  }
-  return items;
+  atUs: number,
+  durationUs: number,
+  format: SequenceFormat,
+): ItemEntity {
+  const base = generatorItem({
+    id,
+    trackId,
+    kind: 'solid',
+    colors: ['#000000'],
+    atUs: Math.max(0, Math.round(atUs)),
+    durationUs: Math.max(1, Math.round(durationUs)),
+    format,
+    name: '间隔',
+  });
+  return { ...base, metadata: { gap: true } } as ItemEntity;
 }
 
-export function moveLinkedGroupAvoidingOverlap(
+function createGapIn(
+  tx: EditTx,
   engine: EditorEngine,
-  groupId: string,
-  deltaUs: number,
-  historyGroup?: string,
-): void {
-  const project = requireProject(engine);
-  const group = project.linkGroups[groupId];
-  if (group === undefined) return;
-  const members = group.itemIds.flatMap(id => {
-    const item = project.items[id];
-    return item === undefined ? [] : [item];
-  });
-  if (members.length === 0) return;
-  const except = group.itemIds;
-  let delta = Math.round(deltaUs);
-  for (const member of members) {
-    delta = Math.max(delta, -member.range.startUs);
-  }
-  for (let pass = 0; pass <= members.length; pass += 1) {
-    const before = delta;
-    for (const member of members) {
-      delta = clampDeltaBeforeOverlap(project, member, delta, except);
-    }
-    if (delta === before) break;
-  }
-  if (delta === 0) return;
-  requireSession(engine).transaction.commands.moveLinkedGroup({
-    groupId,
-    deltaUs: delta,
-    ...(historyGroup === undefined ? {} : { historyGroup }),
-  });
+  trackId: string,
+  atUs: number,
+  durationUs: number,
+  format: SequenceFormat,
+): string {
+  const id = engine.ids.next('item');
+  tx.createEntity(
+    'items',
+    id,
+    gapItem(id, trackId, atUs, durationUs, format) as unknown as JsonObject,
+  );
+  tx.listInsert('tracks', trackId, ['itemIds'], id);
+  return id;
 }
 
-function clampDeltaBeforeOverlap(
-  project: AelionProject,
-  item: ItemEntity,
-  deltaUs: number,
-  except: readonly string[],
-): number {
-  if (deltaUs === 0) return 0;
-  const intended = item.range.startUs + deltaUs;
-  const occupant = overlappingItemOnTrack(
-    project,
-    item.trackId,
-    intended,
-    item.range.durationUs,
-    except,
+/** Inserts deliberate blank space on a track. */
+export function insertGap(
+  engine: EditorEngine,
+  trackId: string,
+  atUs: number,
+  durationUs = DEFAULT_GAP_US,
+): string | undefined {
+  const project = requireProject(engine);
+  const track = project.tracks[trackId];
+  if (track === undefined || track.locked || track.kind !== 'visual') return undefined;
+  const format = sequenceFormat(project);
+  let id: string | undefined;
+  requireSession(engine).transaction.edit(
+    tx => {
+      id = createGapIn(tx, engine, trackId, atUs, durationUs, format);
+    },
+    { label: '插入间隔' },
   );
-  if (occupant === undefined) return deltaUs;
-  if (deltaUs > 0) {
-    return Math.max(
-      0,
-      Math.min(deltaUs, occupant.range.startUs - item.range.durationUs - item.range.startUs),
-    );
+  return id;
+}
+
+/** Replaces a clip with blank space of the same length, keeping the cut intact. */
+export function replaceWithGap(engine: EditorEngine, itemId: string): void {
+  const project = requireProject(engine);
+  const item = project.items[itemId];
+  if (item === undefined) return;
+  const format = sequenceFormat(project);
+  requireSession(engine).transaction.edit(
+    tx => {
+      tx.listRemove('tracks', item.trackId, ['itemIds'], item.id);
+      tx.deleteEntity('items', item.id);
+      createGapIn(tx, engine, item.trackId, item.range.startUs, item.range.durationUs, format);
+    },
+    { label: '替换为间隔' },
+  );
+}
+
+/**
+ * Turns every hole on a track into a real gap Item, inside a caller's edit.
+ *
+ * Existing projects were built when a track could hold arbitrary holes. Packing
+ * such a track would silently delete that blank space, so a magnetic drag
+ * materialises it first. Running inside the drag's interactive edit keeps the
+ * whole gesture a single undo, and cancelling the drag rolls this back too.
+ */
+export function materializeGapsIn(tx: EditTx, engine: EditorEngine, trackId: string): number {
+  const project = requireProject(engine);
+  const holes = storylineHoles(project, trackId);
+  if (holes.length === 0) return 0;
+  const format = sequenceFormat(project);
+  for (const hole of holes) {
+    createGapIn(tx, engine, trackId, hole.startUs, hole.durationUs, format);
   }
-  return Math.min(
-    0,
-    Math.max(deltaUs, occupant.range.startUs + occupant.range.durationUs - item.range.startUs),
-  );
+  return holes.length;
+}
+
+/** Whether a resolved drag would actually change anything. */
+export function placementsChange(
+  project: AelionProject,
+  placements: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+): boolean {
+  for (const [id, next] of placements) {
+    const item = project.items[id];
+    if (item === undefined) continue;
+    if (item.trackId !== next.trackId || item.range.startUs !== next.startUs) return true;
+  }
+  return false;
+}
+
+/**
+ * Writes a resolved drag, inside a caller's edit.
+ *
+ * The drag itself never writes; this turns the plan the pointer was previewing
+ * into the single edit the user undoes.
+ */
+export function applyPlacementsIn(
+  tx: EditTx,
+  project: AelionProject,
+  placements: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>,
+): void {
+  for (const [id, next] of placements) {
+    const item = project.items[id];
+    if (item === undefined) continue;
+    relocateItem(tx, item, next.trackId, next.startUs);
+  }
+  syncTransitionsAfterMoves(tx, project, placements);
 }

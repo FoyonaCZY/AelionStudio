@@ -35,9 +35,9 @@ import {
   setTransitionDuration,
   patchAudio,
   patchVisual,
-  moveItemAvoidingOverlap,
-  moveLinkedGroupAvoidingOverlap,
-  moveLinkedMemberToTrack,
+  materializeGapsIn,
+  applyPlacementsIn,
+  placementsChange,
   resizeTimelineItem,
   setItemEnabled,
   setShapeFill,
@@ -60,11 +60,13 @@ import {
   itemVisual,
   linkedMixerItem,
   mediaSourceSize,
+  primaryVisualTrackId,
   readFittedTransform,
   readTransform,
   visualFitScale,
   type VisualTransform,
 } from './project.js';
+import { planMagneticMove, storylineHoles, type MagneticPlan } from './timeline-layout.js';
 import {
   collectProgramSnapTargets,
   containLayout,
@@ -94,6 +96,8 @@ import {
   clampTimelineScroll,
   hitTimeFromEvent,
   isTimelineScrollbarHit,
+  applyTimelineDrag,
+  clearTimelineDrag,
   renderTimeline,
   snapItemStart,
   snapPlayheadTime,
@@ -165,7 +169,15 @@ interface Gesture {
   readonly durationUs: number;
   readonly pointerId: number;
   readonly historyGroup: string;
-  swappedOccupantId?: string;
+  /**
+   * Where inside the clip the pointer grabbed.
+   *
+   * Without it a drag snaps the clip's head to the cursor, which is the single
+   * biggest reason the old behaviour felt unmoored from the pointer.
+   */
+  grabOffsetUs?: number;
+  /** Resolved on every move, written only on release. */
+  plan?: MagneticPlan;
 }
 
 export class Studio {
@@ -229,7 +241,7 @@ export class Studio {
   #ignoreTransportKeysUntil = 0;
   #playheadPolling = false;
   #revealedItemId: string | undefined;
-  #importTarget: ImportPlacementOptions & { readonly atUs?: number } | undefined;
+  #importTarget: (ImportPlacementOptions & { readonly atUs?: number }) | undefined;
 
   public async start(): Promise<void> {
     this.#layout();
@@ -399,6 +411,8 @@ export class Studio {
       });
     }
     if (this.#programGesture === undefined) {
+      const moveGesture = this.#gesture?.kind === 'move' ? this.#gesture : undefined;
+      const dragPlan = moveGesture?.plan;
       const timelineKey = `${snap?.revision?.toString() ?? ''}:${this.view.selectedItemId ?? ''}:${this.view.selectedTransitionId ?? ''}:${this.view.selectedMarkerId ?? ''}:${this.view.selectedTrackId ?? ''}:${this.view.pixelsPerSecond.toString()}:${durationUs.toString()}:${this.engine.waveforms.size.toString()}:${this.engine.thumbs.size.toString()}:${[...this.engine.filmstrips.keys()].join(',')}:${project === null ? '' : Object.keys(project.transitions).join(',')}`;
       if (timelineKey !== this.#timelineKey) {
         this.#timelineKey = timelineKey;
@@ -409,9 +423,22 @@ export class Studio {
           waveforms: this.engine.waveforms,
           thumbs: this.engine.thumbs,
           filmstrips: this.engine.filmstrips,
+          ...(dragPlan === undefined || moveGesture === undefined
+            ? {}
+            : { drag: { itemId: moveGesture.itemId, plan: dragPlan } }),
         });
       } else {
         syncTimelineViewport(this.#els.timeline, this.view, project);
+      }
+      // Applied to whatever nodes exist, rebuilt or not: the preview must not
+      // depend on a rebuild, because a rebuild is what would kill the easing.
+      if (dragPlan !== undefined && moveGesture !== undefined) {
+        applyTimelineDrag({
+          root: this.#els.timeline,
+          project,
+          view: this.view,
+          drag: { itemId: moveGesture.itemId, plan: dragPlan },
+        });
       }
       this.#queueWaveforms(project);
       if (this.#gesture === undefined) this.#queueFilmstrips(project);
@@ -434,12 +461,7 @@ export class Studio {
   async #seek(timeUs: number): Promise<void> {
     const durationUs = Math.max(1, timelineDurationUs(this.engine.project));
     this.view.currentTimeUs = clampTime(
-      snapPlayheadTime(
-        timeUs,
-        this.engine.project,
-        this.view,
-        this.engine.format.frameRate,
-      ),
+      snapPlayheadTime(timeUs, this.engine.project, this.view, this.engine.format.frameRate),
       durationUs,
     );
     this.#els.timecode.textContent = formatTimecode(
@@ -671,7 +693,9 @@ export class Studio {
           kind: 'transition',
           transitionId,
           timeUs,
-          ...(this.view.selectedTrackId === undefined ? {} : { trackId: this.view.selectedTrackId }),
+          ...(this.view.selectedTrackId === undefined
+            ? {}
+            : { trackId: this.view.selectedTrackId }),
         };
       }
       const itemId = target.closest<HTMLElement>('[data-item]')?.dataset.item;
@@ -685,7 +709,9 @@ export class Studio {
           kind: 'clip',
           itemId,
           timeUs,
-          ...(this.view.selectedTrackId === undefined ? {} : { trackId: this.view.selectedTrackId }),
+          ...(this.view.selectedTrackId === undefined
+            ? {}
+            : { trackId: this.view.selectedTrackId }),
         };
       }
       const trackId = target.closest<HTMLElement>('[data-track]')?.dataset.track;
@@ -839,9 +865,7 @@ export class Studio {
       return [
         menuItem('remove-effect', '删除效果', { danger: true }),
         menuSep,
-        ...(hit.itemId === undefined
-          ? []
-          : [menuItem('delete', '删除片段', { shortcut: 'Del' })]),
+        ...(hit.itemId === undefined ? [] : [menuItem('delete', '删除片段', { shortcut: 'Del' })]),
       ];
     }
     if (hit.kind === 'inspector' && hit.transitionId !== undefined) {
@@ -962,7 +986,9 @@ export class Studio {
       return;
     }
     if (id === 'remove-effect' && hit.itemId !== undefined && hit.effectId !== undefined) {
-      this.run('删除效果', () => removeEffect(this.engine, hit.itemId as string, hit.effectId as string));
+      this.run('删除效果', () =>
+        removeEffect(this.engine, hit.itemId as string, hit.effectId as string),
+      );
       return;
     }
     if (id.startsWith('track-') && hit.trackId !== undefined && this.engine.session !== undefined) {
@@ -1181,7 +1207,9 @@ export class Studio {
           ? undefined
           : this.engine.project?.items[this.view.selectedItemId];
       if (enabling && item?.linkGroupId !== undefined) {
-        this.run('对齐联动', () => realignLinkGroup(this.engine, item.linkGroupId as string, item.id));
+        this.run('对齐联动', () =>
+          realignLinkGroup(this.engine, item.linkGroupId as string, item.id),
+        );
         return;
       }
       this.scheduleRender();
@@ -1835,7 +1863,9 @@ export class Studio {
       durationUs: item.range.durationUs,
       pointerId: event.pointerId,
       historyGroup: `edit-${itemId}-${event.pointerId.toString()}`,
+      ...(kind === 'move' ? { grabOffsetUs: Math.max(0, timeUs - item.range.startUs) } : {}),
     };
+    if (kind === 'move') this.#beginMove();
     this.#els.timeline.setPointerCapture(event.pointerId);
     this.scheduleRender();
   }
@@ -1878,48 +1908,8 @@ export class Studio {
     if (session === undefined || project === null || item === undefined) return;
     try {
       if (gesture.kind === 'move') {
-        const over = document.elementFromPoint(event.clientX, event.clientY);
-        const overTrack = over?.closest<HTMLElement>('.track-row');
-        const overKind = overTrack?.dataset.kind;
-        const itemKind =
-          item.type === 'audio' ? 'audio' : item.type === 'caption' ? 'caption' : 'visual';
-        const trackId =
-          overTrack?.dataset.track !== undefined && overKind === itemKind
-            ? overTrack.dataset.track
-            : undefined;
-        const intended = Math.max(0, gesture.startUs + deltaUs);
-        const targetStartUs = this.view.snap
-          ? snapItemStart(intended, item, project, this.view)
-          : intended;
-        if (item.linkGroupId !== undefined && this.view.linkedEdit) {
-          moveLinkedGroupAvoidingOverlap(
-            this.engine,
-            item.linkGroupId,
-            targetStartUs - item.range.startUs,
-            gesture.historyGroup,
-          );
-          const latest = this.engine.project?.items[item.id];
-          if (latest !== undefined && trackId !== undefined && trackId !== latest.trackId) {
-            moveLinkedMemberToTrack(this.engine, latest.id, trackId, gesture.historyGroup);
-          }
-        } else {
-          const result = moveItemAvoidingOverlap(this.engine, {
-            itemId: item.id,
-            startUs: targetStartUs,
-            fromTrackId: gesture.trackId,
-            fromStartUs: gesture.startUs,
-            ...(trackId !== undefined && trackId !== item.trackId ? { toTrackId: trackId } : {}),
-            ...(gesture.swappedOccupantId === undefined
-              ? {}
-              : { reverseSwapId: gesture.swappedOccupantId }),
-            historyGroup: gesture.historyGroup,
-          });
-          if (result?.kind === 'swap') gesture.swappedOccupantId = result.occupantId;
-          const nextItem = this.engine.project?.items[item.id];
-          if (nextItem !== undefined && nextItem.trackId !== gesture.trackId) {
-            gesture.trackId = nextItem.trackId;
-          }
-        }
+        this.#planMove(gesture, item, event, timeUs);
+        this.scheduleRender();
       } else if (gesture.kind === 'trim' && gesture.edge !== undefined) {
         const toUs =
           gesture.edge === 'start'
@@ -1959,10 +1949,101 @@ export class Studio {
     }
   }
 
+  /**
+   * Resolves where the drag would land, without touching the Project.
+   *
+   * Called on every pointer move. The result is only drawn; `#commitMove` is
+   * what turns the last resolved plan into an edit. Keeping the move read-only
+   * is what lets neighbours animate instead of jumping: the DOM can interpolate
+   * towards a position that has not happened yet.
+   */
+  /**
+   * Opens the drag's interactive edit and makes any pre-existing holes real.
+   *
+   * The storyline could hold arbitrary holes before it was magnetic, and packing
+   * would silently swallow them. They have to become gap Items *before* the
+   * first plan is resolved, or that plan would pack around clips it never saw.
+   * Doing it inside the gesture's interactive edit keeps it one undo, and a
+   * cancelled drag rolls it back with everything else.
+   */
+  #beginMove(): void {
+    const live = this.engine.beginGesture('移动');
+    const project = this.engine.project;
+    if (live === undefined || project === null) return;
+    const primaryTrackId = primaryVisualTrackId(project);
+    if (primaryTrackId === undefined) return;
+    if (storylineHoles(project, primaryTrackId).length === 0) return;
+    live.update(tx => {
+      materializeGapsIn(tx, this.engine, primaryTrackId);
+    });
+  }
+
+  #planMove(gesture: Gesture, item: ItemEntity, event: PointerEvent, timeUs: number): void {
+    const project = this.engine.project;
+    if (project === null) return;
+    const over = document.elementFromPoint(event.clientX, event.clientY);
+    const overTrack = over?.closest<HTMLElement>('.track-row');
+    const itemKind =
+      item.type === 'audio' ? 'audio' : item.type === 'caption' ? 'caption' : 'visual';
+    const targetTrackId =
+      overTrack?.dataset.track !== undefined && overTrack.dataset.kind === itemKind
+        ? overTrack.dataset.track
+        : item.trackId;
+    const intended = Math.max(0, timeUs - (gesture.grabOffsetUs ?? 0));
+    const targetStartUs = this.view.snap
+      ? snapItemStart(intended, item, project, this.view)
+      : intended;
+    const linkedItemIds =
+      item.linkGroupId !== undefined && this.view.linkedEdit
+        ? (project.linkGroups[item.linkGroupId]?.itemIds ?? [])
+        : [];
+    const plan = planMagneticMove(project, {
+      primaryTrackId: primaryVisualTrackId(project),
+      movedItemId: item.id,
+      targetTrackId,
+      targetStartUs,
+      linkedItemIds,
+    });
+    if (plan !== undefined) gesture.plan = plan;
+  }
+
+  /**
+   * Writes the resolved drag as one edit, or nothing at all.
+   *
+   * Pre-existing holes on the storyline become real gap Items first, in the same
+   * interactive edit, so packing cannot silently swallow blank space the project
+   * already had and the whole gesture stays a single undo.
+   */
+  #commitMove(gesture: Gesture): void {
+    const plan = gesture.plan;
+    const project = this.engine.project;
+    const live = this.engine.liveEdit;
+    if (plan === undefined || project === null || live === undefined) {
+      this.engine.endGesture(true);
+      clearTimelineDrag(this.#els.timeline);
+      return;
+    }
+    if (!placementsChange(project, plan.placements)) {
+      this.engine.endGesture(true);
+      clearTimelineDrag(this.#els.timeline);
+      return;
+    }
+    try {
+      live.update(tx => {
+        applyPlacementsIn(tx, project, plan.placements);
+      });
+      this.engine.endGesture();
+    } catch (error) {
+      this.engine.endGesture(true);
+      if (!isIdleEditError(error)) this.setStatus(errorMessage(error, '移动被拒绝'), true);
+    }
+  }
+
   #onTimelinePointerUp(event: PointerEvent): void {
     const gesture = this.#gesture;
     if (gesture?.pointerId !== event.pointerId) return;
     this.#gesture = undefined;
+    if (gesture.kind === 'move') this.#commitMove(gesture);
     if (gesture.kind === 'transition-trim') this.engine.endGesture();
     this.#restorePreviewSharpness();
     this.#refreshPreview();
@@ -2024,7 +2105,22 @@ export class Studio {
   }
 
   #onKey(event: KeyboardEvent): void {
-    if (event.key === 'Escape') hideContextMenu();
+    if (event.key === 'Escape') {
+      hideContextMenu();
+      // Nothing has been written yet, so abandoning the plan is the whole undo.
+      if (this.#gesture?.kind === 'move') {
+        const pointerId = this.#gesture.pointerId;
+        this.#gesture = undefined;
+        this.engine.endGesture(true);
+        clearTimelineDrag(this.#els.timeline);
+        try {
+          this.#els.timeline.releasePointerCapture(pointerId);
+        } catch {
+          // The pointer may already have been released; the gesture is gone either way.
+        }
+        this.scheduleRender();
+      }
+    }
     if (this.#screen !== 'editor') return;
     const typing =
       event.target instanceof HTMLInputElement ||
@@ -2853,7 +2949,11 @@ export class Studio {
 
   #placeMarker(
     timeUs: number,
-    host: { readonly itemId?: string; readonly trackId?: string; readonly looseItem?: boolean } = {},
+    host: {
+      readonly itemId?: string;
+      readonly trackId?: string;
+      readonly looseItem?: boolean;
+    } = {},
   ): void {
     const project = this.engine.project;
     if (project === null) return;
@@ -2885,7 +2985,8 @@ export class Studio {
     const project = this.engine.project;
     const asset = project?.assets[assetId];
     if (project === null || project === undefined || asset === undefined) return;
-    const name = typeof asset.name === 'string' && asset.name.length > 0 ? asset.name : '未命名素材';
+    const name =
+      typeof asset.name === 'string' && asset.name.length > 0 ? asset.name : '未命名素材';
     const used = itemsUsingAsset(project, assetId).length;
     const message =
       used > 0

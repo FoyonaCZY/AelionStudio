@@ -254,6 +254,35 @@ export function orderedTracks(project: AelionProject): TrackEntity[] {
   return [...visual, ...caption, ...audio];
 }
 
+/**
+ * The magnetic storyline: the visual track that renders lowest.
+ *
+ * `orderedTracks` reverses visual tracks for display, so the lane at the bottom
+ * of the timeline is the first visual track in sequence order. That lane carries
+ * the cut everything else is timed against, so it is the one kept packed; every
+ * other track stays freely positionable.
+ */
+export function primaryVisualTrackId(project: AelionProject | null): string | undefined {
+  if (project === null) return undefined;
+  const sequence = project.sequences[project.settings.defaultSequenceId];
+  if (sequence === undefined) return undefined;
+  return sequence.trackIds.find(id => project.tracks[id]?.kind === 'visual');
+}
+
+/**
+ * Whether an Item is deliberate blank space rather than content.
+ *
+ * A packed storyline cannot represent a hole, so blank space has to be an Item
+ * like any other. It is a black solid generator carrying a marker in metadata:
+ * the Render IR only compiles a fixed set of Item types, so inventing a `gap`
+ * type would need an SDK change, while `metadata` is already part of `baseItem`.
+ */
+export function isGapItem(item: ItemEntity): boolean {
+  const metadata = (item as JsonObject).metadata;
+  if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+  return (metadata as JsonObject).gap === true;
+}
+
 export function itemSource(item: ItemEntity): JsonObject | undefined {
   const source = (item as JsonObject).source;
   if (source === null || typeof source !== 'object' || Array.isArray(source)) return undefined;
@@ -292,10 +321,7 @@ export function itemAudio(item: ItemEntity): JsonObject | undefined {
   return audio;
 }
 
-export function linkedMixerItem(
-  project: AelionProject,
-  item: ItemEntity,
-): ItemEntity | undefined {
+export function linkedMixerItem(project: AelionProject, item: ItemEntity): ItemEntity | undefined {
   if (itemAudio(item) !== undefined) return item;
   const group = item.linkGroupId === undefined ? undefined : project.linkGroups[item.linkGroupId];
   if (group === undefined) return undefined;

@@ -333,3 +333,158 @@ export function settleAfterPackedPair(
   }
   return result;
 }
+
+/** Where each affected Item lands, plus what the drop indicator should show. */
+export interface MagneticPlan {
+  readonly placements: ReadonlyMap<string, { readonly trackId: string; readonly startUs: number }>;
+  /** Insertion line position on the storyline, absent when the drop is free. */
+  readonly insertAtUs: number | undefined;
+  /** Where the dragged Item is drawn while the pointer is down. */
+  readonly ghost: { readonly trackId: string; readonly startUs: number };
+  readonly mode: 'reorder' | 'free';
+}
+
+interface PlannedItem {
+  readonly id: string;
+  readonly durationUs: number;
+}
+
+function plannedItems(project: AelionProject, trackId: string, except: ItemExcept): PlannedItem[] {
+  return itemsOnTrack(project, trackId, except).map(item => ({
+    id: item.id,
+    durationUs: item.range.durationUs,
+  }));
+}
+
+/**
+ * Packs a storyline left from its first clip, leaving no gap and no overlap.
+ *
+ * Gap Items are ordinary members of the sequence, so deliberate blank space
+ * survives packing while accidental holes do not.
+ */
+function packStoryline(items: readonly PlannedItem[], startUs: number): Map<string, number> {
+  const placed = new Map<string, number>();
+  let cursor = Math.max(0, startUs);
+  for (const item of items) {
+    placed.set(item.id, cursor);
+    cursor += item.durationUs;
+  }
+  return placed;
+}
+
+/**
+ * Insertion index for a clip dropped at `targetStartUs`.
+ *
+ * The comparison is against each resident clip's midpoint, which is what makes
+ * the drop feel decided rather than fought over: the dragged clip takes a slot
+ * once its own start passes the middle of the clip holding that slot, and there
+ * is exactly one boundary rather than a band where nothing happens.
+ */
+function insertionIndex(items: readonly PlannedItem[], targetStartUs: number): number {
+  let cursor = 0;
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (item === undefined) break;
+    if (targetStartUs < cursor + item.durationUs / 2) return index;
+    cursor += item.durationUs;
+  }
+  return items.length;
+}
+
+/**
+ * Resolves a drag into final positions without touching the Project.
+ *
+ * Pure by design: the pointer move recomputes this on every frame to draw the
+ * preview, and only the pointer release turns the result into a transaction.
+ * That is the whole difference from the previous behaviour, where each move
+ * committed and the timeline rearranged underneath the cursor.
+ */
+export function planMagneticMove(
+  project: AelionProject,
+  options: {
+    readonly primaryTrackId: string | undefined;
+    readonly movedItemId: string;
+    readonly targetTrackId: string;
+    readonly targetStartUs: number;
+    /** Linked partners that must keep their offset to the dragged Item. */
+    readonly linkedItemIds?: readonly string[];
+  },
+): MagneticPlan | undefined {
+  const moved = project.items[options.movedItemId];
+  const targetTrack = project.tracks[options.targetTrackId];
+  if (moved === undefined || targetTrack === undefined || targetTrack.locked) return undefined;
+
+  const linked = (options.linkedItemIds ?? []).filter(id => id !== moved.id);
+  const followers = linked.flatMap(id => {
+    const item = project.items[id];
+    return item === undefined ? [] : [item];
+  });
+  const placements = new Map<string, { readonly trackId: string; readonly startUs: number }>();
+  const targetStartUs = Math.max(0, Math.round(options.targetStartUs));
+  const primaryTrackId = options.primaryTrackId;
+  const sourceWasPrimary = moved.trackId === primaryTrackId;
+  const targetIsPrimary = options.targetTrackId === primaryTrackId;
+
+  let movedStartUs: number;
+
+  if (targetIsPrimary && primaryTrackId !== undefined) {
+    const residents = plannedItems(project, primaryTrackId, moved.id);
+    const storylineStartUs = itemsOnTrack(project, primaryTrackId)[0]?.range.startUs ?? 0;
+    const index = insertionIndex(residents, targetStartUs);
+    const ordered = [
+      ...residents.slice(0, index),
+      { id: moved.id, durationUs: moved.range.durationUs },
+      ...residents.slice(index),
+    ];
+    const packed = packStoryline(ordered, storylineStartUs);
+    for (const [id, startUs] of packed) {
+      placements.set(id, { trackId: primaryTrackId, startUs });
+    }
+    movedStartUs = packed.get(moved.id) ?? targetStartUs;
+  } else {
+    movedStartUs = targetStartUs;
+    placements.set(moved.id, { trackId: options.targetTrackId, startUs: movedStartUs });
+    // Leaving the storyline closes the hole the clip was occupying.
+    if (sourceWasPrimary && primaryTrackId !== undefined) {
+      const residents = plannedItems(project, primaryTrackId, moved.id);
+      const storylineStartUs = itemsOnTrack(project, primaryTrackId)[0]?.range.startUs ?? 0;
+      for (const [id, startUs] of packStoryline(residents, storylineStartUs)) {
+        placements.set(id, { trackId: primaryTrackId, startUs });
+      }
+    }
+  }
+
+  // Followers keep their offset to the clip they are linked to and never take
+  // part in packing: their own lanes stay freely positioned.
+  const deltaUs = movedStartUs - moved.range.startUs;
+  for (const follower of followers) {
+    placements.set(follower.id, {
+      trackId: follower.trackId,
+      startUs: Math.max(0, follower.range.startUs + deltaUs),
+    });
+  }
+
+  return {
+    placements,
+    insertAtUs: targetIsPrimary ? movedStartUs : undefined,
+    ghost: { trackId: options.targetTrackId, startUs: movedStartUs },
+    mode: targetIsPrimary ? 'reorder' : 'free',
+  };
+}
+
+/** Holes on the storyline, as ranges a gap Item would need to fill. */
+export function storylineHoles(
+  project: AelionProject,
+  trackId: string,
+): { readonly startUs: number; readonly durationUs: number }[] {
+  const items = itemsOnTrack(project, trackId);
+  const holes: { startUs: number; durationUs: number }[] = [];
+  let cursor = items[0]?.range.startUs ?? 0;
+  for (const item of items) {
+    if (item.range.startUs > cursor) {
+      holes.push({ startUs: cursor, durationUs: item.range.startUs - cursor });
+    }
+    cursor = Math.max(cursor, item.range.startUs + item.range.durationUs);
+  }
+  return holes;
+}
