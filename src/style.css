@@ -881,10 +881,20 @@ kbd {
 .lib-tile-thumb.is-audio small {
   color: var(--muted);
 }
-.lib-tile-thumb img {
+.lib-tile-thumb img,
+.lib-tile-thumb.is-preview svg {
+  display: block;
   width: 100%;
   height: 100%;
+}
+.lib-tile-thumb img {
   object-fit: cover;
+}
+.lib-tile-thumb.is-preview {
+  background: #141414;
+}
+.lib-tile:hover .lib-tile-thumb:not(.is-audio) {
+  box-shadow: 0 0 0 1px #3f3f3f;
 }
 .lib-tile-name {
   overflow: hidden;
@@ -1638,4 +1648,57 @@ kbd {
   margin: 0;
   color: #c8c8c8;
   font-size: 10px;
+}
+.ctx-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 6px;
+  background: #1c1c1c;
+  border: 1px solid #333;
+  border-radius: 10px;
+  box-shadow: 0 16px 40px #00000099;
+}
+.ctx-menu[hidden] {
+  display: none !important;
+}
+.ctx-menu hr {
+  height: 1px;
+  margin: 5px 6px;
+  border: 0;
+  background: #333;
+}
+.ctx-menu button {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  text-align: left;
+  color: var(--text);
+}
+.ctx-menu button:hover:not(:disabled) {
+  background: #2b4f86;
+  color: #fff;
+}
+.ctx-menu button:disabled {
+  color: var(--muted);
+}
+.ctx-menu button[data-checked='true']::before {
+  content: '✓';
+  margin-right: 6px;
+  color: #8ec0ff;
+}
+.ctx-menu button.danger {
+  color: #e7a09c;
+}
+.ctx-menu button.danger:hover:not(:disabled) {
+  background: #5a2a2a;
+  color: #ffd2cf;
 }

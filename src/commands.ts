@@ -21,6 +21,7 @@ import {
   generatorItem,
   imageItem,
   itemAudio,
+  itemMediaRef,
   itemSource,
   itemVisual,
   linearTimeMapping,
@@ -226,6 +227,26 @@ export function insertExistingAsset(
     historyGroup,
   });
   return id;
+}
+
+export function renameAsset(engine: EditorEngine, assetId: string, name: string): void {
+  const project = requireProject(engine);
+  const asset = project.assets[assetId];
+  const next = name.trim();
+  if (asset === undefined || next.length === 0) return;
+  const previous = typeof asset.name === 'string' ? asset.name : '';
+  if (previous === next) return;
+  write(engine, '重命名素材', tx => {
+    tx.setField('assets', assetId, ['name'], next);
+    for (const item of Object.values(project.items)) {
+      const ref = itemMediaRef(item);
+      if (ref?.assetId !== assetId) continue;
+      const itemName = typeof item.name === 'string' ? item.name : '';
+      if (itemName === previous || itemName === assetId || itemName.length === 0) {
+        tx.setField('items', item.id, ['name'], next);
+      }
+    }
+  });
 }
 
 export function insertGenerated(

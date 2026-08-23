@@ -21,6 +21,7 @@ import {
   insertCaptionCue,
   insertExistingAsset,
   insertGenerated,
+  renameAsset,
   neighborPair,
   removeTransition,
   resizeTransition,
@@ -89,6 +90,16 @@ import {
   TRACK_HEADER_WIDTH,
   xToUs,
 } from './timeline.js';
+import {
+  allowsNativeContextMenu,
+  hideContextMenu,
+  isContextMenuElement,
+  item as menuItem,
+  sep as menuSep,
+  showContextMenu,
+  type ContextMenuEntry,
+  type ContextTarget,
+} from './context-menu.js';
 import { createHomeState, editorHash, HOME_HASH, parseStudioRoute, renderHome } from './home.js';
 import { listProjectSummaries, type ProjectSummary } from './project-store.js';
 import {
@@ -175,6 +186,7 @@ export class Studio {
     fileSub: requiredElement('#file-sub') as HTMLInputElement,
     dialogNew: requiredElement('#dialog-new') as HTMLDialogElement,
     dialogUrl: requiredElement('#dialog-url') as HTMLDialogElement,
+    dialogRename: requiredElement('#dialog-rename') as HTMLDialogElement,
     dialogExport: requiredElement('#dialog-export') as HTMLDialogElement,
     dialogInfo: requiredElement('#dialog-info') as HTMLDialogElement,
     exportProgress: requiredElement('#export-progress'),
@@ -193,6 +205,7 @@ export class Studio {
   #scrubScheduled = false;
   #scrubTimeUs = 0;
   #libraryKey = '';
+  #renameAssetId: string | undefined;
   #inspectorKey = '';
   #timelineKey = '';
   #screen: 'home' | 'editor' = 'home';
@@ -322,7 +335,13 @@ export class Studio {
     const quality = document.querySelector('#quality');
     if (quality instanceof HTMLSelectElement) quality.value = this.view.previewQuality;
     const libraryThumbs = libraryPreviewUrls(project, this.engine.thumbs, this.engine.filmstrips);
-    const libraryKey = `${this.view.libraryTab}:${this.view.libraryView}:${this.view.librarySort}:${project === null ? '' : Object.keys(project.assets).join(',')}:${libraryThumbs.size.toString()}`;
+    const assetStamp =
+      project === null
+        ? ''
+        : Object.values(project.assets)
+            .map(asset => `${asset.id}:${typeof asset.name === 'string' ? asset.name : ''}`)
+            .join(',');
+    const libraryKey = `${this.view.libraryTab}:${this.view.libraryView}:${this.view.librarySort}:${assetStamp}:${libraryThumbs.size.toString()}`;
     if (libraryKey !== this.#libraryKey) {
       this.#libraryKey = libraryKey;
       renderLibrary({
@@ -457,6 +476,10 @@ export class Studio {
       this.#els.fileSub.value = '';
       if (file !== undefined) void this.#importSubtitle(file);
     });
+    on(document, 'contextmenu', event => this.#onContextMenu(event as MouseEvent), {
+      capture: true,
+    });
+    on(window, 'resize', () => hideContextMenu());
     on(this.#els.home, 'click', event => this.#onHomeClick(event));
     on(this.#els.homeSearch, 'input', () => {
       this.#home.query = this.#els.homeSearch.value;
@@ -467,6 +490,7 @@ export class Studio {
       this.#renderHome();
     });
     on(window, 'hashchange', () => {
+      hideContextMenu();
       void this.#applyRoute();
     });
     on(this.#els.studio, 'click', event => this.#onClick(event));
@@ -525,6 +549,8 @@ export class Studio {
     });
     on(this.#els.dialogNew, 'close', () => this.#onNewProject());
     on(this.#els.dialogUrl, 'close', () => this.#onImportUrl());
+    on(this.#els.dialogRename, 'close', () => this.#onRenameAsset());
+    on(requiredElement('#rename-cancel'), 'click', () => this.#els.dialogRename.close('cancel'));
     on(this.#els.inspector, 'focusout', () => {
       queueMicrotask(() => {
         if (!this.#els.inspector.contains(document.activeElement)) this.scheduleRender();
@@ -536,7 +562,352 @@ export class Studio {
       document.querySelectorAll('.menus details[open]').forEach(node => {
         if (!node.contains(target)) node.removeAttribute('open');
       });
+      if (!isContextMenuElement(target)) hideContextMenu();
     });
+  }
+
+  #onContextMenu(event: MouseEvent): void {
+    if (event.shiftKey) return;
+    if (allowsNativeContextMenu(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (isContextMenuElement(event.target)) return;
+    document.querySelectorAll('.menus details[open]').forEach(node => node.removeAttribute('open'));
+    const hit = this.#contextTarget(event);
+    showContextMenu({
+      items: this.#contextItems(hit),
+      x: event.clientX,
+      y: event.clientY,
+      onSelect: id => this.#runContext(id, hit),
+    });
+  }
+
+  #contextTarget(event: MouseEvent): ContextTarget {
+    const target = event.target;
+    if (!(target instanceof Element)) return { kind: 'app' };
+    if (document.querySelector('dialog[open]') !== null) return { kind: 'dialog' };
+    if (this.#screen === 'home') {
+      const projectId =
+        target.closest<HTMLElement>('[data-open-project]')?.dataset.openProject ??
+        target.closest<HTMLElement>('[data-delete-project]')?.dataset.deleteProject ??
+        target
+          .closest<HTMLElement>('.project-card')
+          ?.querySelector<HTMLElement>('[data-open-project]')?.dataset.openProject;
+      return projectId === undefined ? { kind: 'home' } : { kind: 'home-project', projectId };
+    }
+    const effectId = target.closest<HTMLElement>('[data-effect]')?.dataset.effect;
+    if (effectId !== undefined && this.#els.inspector.contains(target)) {
+      return {
+        kind: 'inspector-effect',
+        effectId,
+        ...(this.view.selectedItemId === undefined ? {} : { itemId: this.view.selectedItemId }),
+      };
+    }
+    if (this.#els.inspector.contains(target)) {
+      return {
+        kind: 'inspector',
+        ...(this.view.selectedItemId === undefined ? {} : { itemId: this.view.selectedItemId }),
+        ...(this.view.selectedTransitionId === undefined
+          ? {}
+          : { transitionId: this.view.selectedTransitionId }),
+      };
+    }
+    const drop = target.closest<HTMLElement>('[data-drop]')?.dataset.drop;
+    if (drop !== undefined) return { kind: 'library-tile', drop };
+    if (this.#els.library.contains(target)) return { kind: 'library' };
+    if (requiredElement('.viewer').contains(target) && !this.#els.timeline.contains(target)) {
+      return { kind: 'monitor' };
+    }
+    if (this.#els.timeline.contains(target)) {
+      const timeUs = hitTimeFromEvent(event, this.#els.timeline, this.view);
+      const transitionId = target.closest<HTMLElement>('[data-transition]')?.dataset.transition;
+      if (transitionId !== undefined) {
+        this.view.selectedTransitionId = transitionId;
+        this.view.selectedItemId = undefined;
+        this.view.selectedTrackId = target.closest<HTMLElement>('[data-track]')?.dataset.track;
+        this.scheduleRender();
+        return {
+          kind: 'transition',
+          transitionId,
+          timeUs,
+          ...(this.view.selectedTrackId === undefined ? {} : { trackId: this.view.selectedTrackId }),
+        };
+      }
+      const itemId = target.closest<HTMLElement>('[data-item]')?.dataset.item;
+      if (itemId !== undefined) {
+        this.view.selectedItemId = itemId;
+        this.view.selectedTransitionId = undefined;
+        this.view.selectedTrackId = target.closest<HTMLElement>('[data-track]')?.dataset.track;
+        this.scheduleRender();
+        return {
+          kind: 'clip',
+          itemId,
+          timeUs,
+          ...(this.view.selectedTrackId === undefined ? {} : { trackId: this.view.selectedTrackId }),
+        };
+      }
+      const trackId = target.closest<HTMLElement>('[data-track]')?.dataset.track;
+      if (trackId !== undefined) {
+        this.view.selectedTrackId = trackId;
+        this.scheduleRender();
+        return { kind: 'track', trackId, timeUs };
+      }
+      return { kind: 'timeline', timeUs };
+    }
+    return { kind: 'app' };
+  }
+
+  #contextItems(hit: ContextTarget): ContextMenuEntry[] {
+    const canUndo = this.engine.session?.transaction.canUndo === true;
+    const canRedo = this.engine.session?.transaction.canRedo === true;
+    const playing = this.engine.session?.player.state === 'playing';
+    const edit = [
+      menuItem('undo', '撤销', { shortcut: 'Ctrl+Z', disabled: !canUndo }),
+      menuItem('redo', '重做', { shortcut: 'Ctrl+Y', disabled: !canRedo }),
+    ];
+    if (hit.kind === 'dialog') return [menuItem('dialog-close', '关闭')];
+    if (hit.kind === 'home-project') {
+      return [
+        menuItem('open-project', '打开'),
+        menuSep,
+        menuItem('delete-project', '删除工程', { danger: true }),
+      ];
+    }
+    if (hit.kind === 'home') {
+      return [menuItem('new', '新建项目'), menuItem('import', '导入媒体…')];
+    }
+    if (hit.kind === 'library-tile' && hit.drop !== undefined) {
+      if (hit.drop.startsWith('effect:')) {
+        return [
+          menuItem('apply-drop', '应用到所选片段', {
+            disabled: this.view.selectedItemId === undefined,
+          }),
+        ];
+      }
+      if (hit.drop.startsWith('transition:')) {
+        return [
+          menuItem('apply-drop', '应用到所选接头', {
+            disabled: this.view.selectedItemId === undefined,
+          }),
+        ];
+      }
+      return [
+        menuItem('apply-drop', '添加到时间线'),
+        ...(hit.drop.startsWith('asset:') ? [menuItem('rename-asset', '重命名')] : []),
+        menuSep,
+        menuItem('import', '导入媒体…'),
+        menuItem('import-url', '从 URL 导入…'),
+      ];
+    }
+    if (hit.kind === 'library') {
+      return [
+        menuItem('import', '导入媒体…'),
+        menuItem('import-url', '从 URL 导入…'),
+        menuSep,
+        menuItem('lib-view', this.view.libraryView === 'grid' ? '列表视图' : '网格视图'),
+      ];
+    }
+    if (hit.kind === 'clip' && hit.itemId !== undefined) {
+      const item = this.engine.project?.items[hit.itemId];
+      const inside =
+        item !== undefined &&
+        this.view.currentTimeUs > item.range.startUs &&
+        this.view.currentTimeUs < item.range.startUs + item.range.durationUs;
+      return [
+        ...edit,
+        menuSep,
+        menuItem('split', '分割', { shortcut: 'S', disabled: !inside }),
+        menuItem('freeze', '定格'),
+        menuItem('transition-dissolve', '交叉叠化'),
+        menuSep,
+        menuItem('toggle-item', item?.enabled === false ? '启用' : '禁用'),
+        menuItem('delete', '删除', { shortcut: 'Del' }),
+        menuItem('ripple-delete', '波纹删除'),
+      ];
+    }
+    if (hit.kind === 'transition') {
+      return [
+        menuItem('delete-transition', '删除转场', { shortcut: 'Del', danger: true }),
+        menuSep,
+        ...edit,
+      ];
+    }
+    if (hit.kind === 'track' && hit.trackId !== undefined) {
+      const track = this.engine.project?.tracks[hit.trackId];
+      const audio = track?.kind === 'audio';
+      return [
+        menuItem('seek-here', '播放头移到此处'),
+        menuItem('marker-here', '在此处打点'),
+        menuItem('import', '导入到此轨道…'),
+        menuSep,
+        ...(audio
+          ? [
+              menuItem('track-mute', track?.audio?.muted === true ? '取消静音' : '静音'),
+              menuItem('track-solo', track?.audio?.solo === true ? '取消独奏' : '独奏'),
+            ]
+          : [menuItem('track-enable', track?.enabled === false ? '显示轨道' : '隐藏轨道')]),
+        menuItem('track-lock', track?.locked === true ? '解锁轨道' : '锁定轨道'),
+        menuSep,
+        menuItem('add-v', '添加视频轨'),
+        menuItem('add-a', '添加音频轨'),
+        menuItem('add-c', '添加字幕轨'),
+      ];
+    }
+    if (hit.kind === 'timeline') {
+      return [
+        menuItem('seek-here', '播放头移到此处'),
+        menuItem('marker-here', '在此处打点', { shortcut: 'M' }),
+        menuSep,
+        menuItem('snap', '吸附', { checked: this.view.snap }),
+        menuItem('ripple', '波纹编辑', { checked: this.view.ripple }),
+        menuItem('zoom-in', '放大时间线'),
+        menuItem('zoom-out', '缩小时间线'),
+        menuSep,
+        menuItem('add-v', '添加视频轨'),
+        menuItem('add-a', '添加音频轨'),
+        menuItem('add-c', '添加字幕轨'),
+      ];
+    }
+    if (hit.kind === 'monitor') {
+      return [
+        menuItem('play', playing ? '暂停' : '播放', { shortcut: 'Space' }),
+        menuItem('to-start', '到开头', { shortcut: 'Home' }),
+        menuItem('to-end', '到结尾', { shortcut: 'End' }),
+        menuSep,
+        menuItem('safe-area', '安全框', { checked: this.view.showSafeArea }),
+        menuItem('export', '导出…'),
+      ];
+    }
+    if (hit.kind === 'inspector-effect') {
+      return [
+        menuItem('remove-effect', '删除效果', { danger: true }),
+        menuSep,
+        ...(hit.itemId === undefined
+          ? []
+          : [menuItem('delete', '删除片段', { shortcut: 'Del' })]),
+      ];
+    }
+    if (hit.kind === 'inspector' && hit.transitionId !== undefined) {
+      return [menuItem('delete-transition', '删除转场', { danger: true })];
+    }
+    if (hit.kind === 'inspector' && hit.itemId !== undefined) {
+      return [
+        menuItem('split', '分割', { shortcut: 'S' }),
+        menuItem('freeze', '定格'),
+        menuItem('delete', '删除', { shortcut: 'Del' }),
+      ];
+    }
+    return [
+      ...edit,
+      menuSep,
+      menuItem('import', '导入媒体…'),
+      menuItem('save', '保存草稿'),
+      menuItem('export', '导出…'),
+      menuSep,
+      menuItem('projects', '全部项目'),
+      menuItem('shortcuts', '快捷键'),
+    ];
+  }
+
+  #runContext(id: string, hit: ContextTarget): void {
+    if (id === 'dialog-close') {
+      document.querySelectorAll('dialog[open]').forEach(node => {
+        if (node instanceof HTMLDialogElement) node.close();
+      });
+      return;
+    }
+    if (id === 'open-project' && hit.projectId !== undefined) {
+      location.hash = editorHash(hit.projectId);
+      return;
+    }
+    if (id === 'delete-project' && hit.projectId !== undefined) {
+      void this.#deleteProject(hit.projectId);
+      return;
+    }
+    if (id === 'apply-drop' && hit.drop !== undefined) {
+      this.#applyDrop(hit.drop, this.view.currentTimeUs, this.view.selectedTrackId, false);
+      return;
+    }
+    if (id === 'rename-asset' && hit.drop?.startsWith('asset:') === true) {
+      this.#openRenameAsset(hit.drop.slice('asset:'.length));
+      return;
+    }
+    if (id === 'lib-view') {
+      this.#action('lib-view', this.#els.library);
+      return;
+    }
+    if (id === 'seek-here' && hit.timeUs !== undefined) {
+      void this.#seek(hit.timeUs);
+      return;
+    }
+    if (id === 'marker-here') {
+      this.run('标记', () => addMarker(this.engine, hit.timeUs ?? this.view.currentTimeUs));
+      return;
+    }
+    if (id === 'play') {
+      void this.#togglePlay();
+      return;
+    }
+    if (id === 'to-start') {
+      void this.#seek(0);
+      return;
+    }
+    if (id === 'to-end') {
+      void this.#seek(Math.max(0, this.engine.renderDurationUs - 1));
+      return;
+    }
+    if (id === 'toggle-item' && hit.itemId !== undefined) {
+      const item = this.engine.project?.items[hit.itemId];
+      if (item === undefined) return;
+      this.run(item.enabled === false ? '启用' : '禁用', () =>
+        setItemEnabled(this.engine, hit.itemId as string, item.enabled === false),
+      );
+      return;
+    }
+    if (id === 'remove-effect' && hit.itemId !== undefined && hit.effectId !== undefined) {
+      this.run('删除效果', () => removeEffect(this.engine, hit.itemId as string, hit.effectId as string));
+      return;
+    }
+    if (id.startsWith('track-') && hit.trackId !== undefined && this.engine.session !== undefined) {
+      const track = this.engine.project?.tracks[hit.trackId];
+      if (id === 'track-mute') {
+        this.engine.session.transaction.commands.setTrackMuted({
+          trackId: hit.trackId,
+          value: track?.audio?.muted !== true,
+        });
+      } else if (id === 'track-solo') {
+        this.engine.session.transaction.commands.setTrackSolo({
+          trackId: hit.trackId,
+          value: track?.audio?.solo !== true,
+        });
+      } else if (id === 'track-lock') {
+        this.engine.session.transaction.commands.setTrackLocked({
+          trackId: hit.trackId,
+          value: track?.locked !== true,
+        });
+      } else if (id === 'track-enable') {
+        this.engine.session.transaction.commands.setTrackEnabled({
+          trackId: hit.trackId,
+          value: track?.enabled !== true,
+        });
+      }
+      this.scheduleRender();
+      return;
+    }
+    if (
+      id === 'snap' ||
+      id === 'ripple' ||
+      id === 'safe-area' ||
+      id === 'zoom-in' ||
+      id === 'zoom-out' ||
+      id === 'freeze' ||
+      id === 'transition-dissolve' ||
+      id === 'delete-transition'
+    ) {
+      this.#action(id, this.#els.studio);
+      return;
+    }
+    this.#command(id);
   }
 
   #setPressed(id: string, on: boolean): void {
@@ -1407,6 +1778,7 @@ export class Studio {
   }
 
   #onTimelineScroll(event: Event): void {
+    hideContextMenu();
     const target = event.target;
     if (!(target instanceof HTMLElement) || target.dataset.role !== 'hscroll') return;
     this.view.scrollLeftPx = Math.max(0, target.scrollLeft);
@@ -1414,6 +1786,7 @@ export class Studio {
   }
 
   #onTimelineWheel(event: WheelEvent): void {
+    hideContextMenu();
     if (event.ctrlKey || event.metaKey) {
       event.preventDefault();
       this.#zoom(event.deltaY < 0 ? 1.12 : 0.9, event.clientX);
@@ -1458,6 +1831,7 @@ export class Studio {
   }
 
   #onKey(event: KeyboardEvent): void {
+    if (event.key === 'Escape') hideContextMenu();
     if (this.#screen !== 'editor') return;
     const typing =
       event.target instanceof HTMLInputElement ||
@@ -2090,6 +2464,7 @@ export class Studio {
     this.#screen = screen;
     this.#els.home.hidden = screen !== 'home';
     this.#els.studio.hidden = screen !== 'editor';
+    hideContextMenu();
   }
 
   #renderHome(): void {
@@ -2220,6 +2595,28 @@ export class Studio {
     });
   }
 
+  #openRenameAsset(assetId: string): void {
+    const asset = this.engine.project?.assets[assetId];
+    if (asset === undefined) return;
+    this.#renameAssetId = assetId;
+    const input = requiredElement('#rename-asset-name') as HTMLInputElement;
+    input.value = typeof asset.name === 'string' ? asset.name : assetId;
+    this.#els.dialogRename.showModal();
+    queueMicrotask(() => {
+      input.focus();
+      input.select();
+    });
+  }
+
+  #onRenameAsset(): void {
+    const assetId = this.#renameAssetId;
+    this.#renameAssetId = undefined;
+    if (this.#els.dialogRename.returnValue !== 'ok' || assetId === undefined) return;
+    const name = (requiredElement('#rename-asset-name') as HTMLInputElement).value.trim();
+    if (name.length === 0) return;
+    this.run('重命名素材', () => renameAsset(this.engine, assetId, name));
+  }
+
   #queueWaveforms(project: AelionProject | null): void {
     if (project === null) return;
     if (this.engine.session?.player.state === 'playing') return;
@@ -2319,4 +2716,6 @@ Y/U/N  滑移 / 滑动 / 滚动
 Home/End  起止
 +/-    缩放
 Del    删除
-Ctrl+Z / Ctrl+Y  撤销重做`;
+Ctrl+Z / Ctrl+Y  撤销重做
+右键   上下文菜单
+Shift+右键  系统菜单`;

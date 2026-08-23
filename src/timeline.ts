@@ -349,7 +349,11 @@ export function isTimelineScrollbarHit(event: PointerEvent, root: HTMLElement): 
   return false;
 }
 
-export function hitTimeFromEvent(event: PointerEvent, root: HTMLElement, view: ViewState): number {
+export function hitTimeFromEvent(
+  event: { readonly clientX: number; readonly target: EventTarget | null },
+  root: HTMLElement,
+  view: ViewState,
+): number {
   const lane = (event.target as HTMLElement | null)?.closest('.track-lane');
   if (lane instanceof HTMLElement) {
     return contentXToUs(event.clientX - lane.getBoundingClientRect().left, view);

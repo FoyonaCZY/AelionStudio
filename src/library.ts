@@ -3,6 +3,7 @@ import type { AelionProject } from '@aelionsdk/project-schema';
 
 import { formatClock, safeText } from './format.js';
 import { icon } from './icons.js';
+import { libraryPreview } from './library-previews.js';
 import { EFFECT_CATALOG, TRANSITION_CATALOG } from './project.js';
 import type { LibrarySort, LibraryTab, LibraryView } from './view-state.js';
 
@@ -22,14 +23,14 @@ function tile(
   hint: string,
   options: { readonly thumb?: string; readonly audio?: boolean } = {},
 ): string {
+  const preview = libraryPreview(kind);
   const media =
     options.audio === true
       ? `<span class="lib-tile-thumb is-audio">${icon('music', 20)}<em>Audio</em><small>${safeText(hint)}</small></span>`
-      : `<span class="lib-tile-thumb">${
-          options.thumb === undefined
-            ? `<em>${safeText(title.slice(0, 1))}</em>`
-            : `<img alt="" src="${safeText(options.thumb)}">`
-        }</span>`;
+      : options.thumb !== undefined
+        ? `<span class="lib-tile-thumb"><img alt="" src="${safeText(options.thumb)}"></span>`
+        : (preview ??
+          `<span class="lib-tile-thumb"><em>${safeText(title.slice(0, 1))}</em></span>`);
   return `<button type="button" class="lib-tile" draggable="true" data-drop="${safeText(kind)}" title="双击添加到时间线，或拖到轨道上">
     ${media}
     <span class="lib-tile-name">${safeText(title)}</span>

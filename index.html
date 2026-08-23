@@ -573,6 +573,17 @@
       </form>
     </dialog>
 
+    <dialog id="dialog-rename" class="modal">
+      <form method="dialog">
+        <h2>重命名素材</h2>
+        <label>名称<input id="rename-asset-name" required maxlength="120" autocomplete="off" /></label>
+        <menu>
+          <button type="button" id="rename-cancel">取消</button>
+          <button value="ok" class="primary">确定</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="dialog-export" class="modal export-modal">
       <form method="dialog">
         <header class="modal-head">
