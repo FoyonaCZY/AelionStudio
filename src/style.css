@@ -1348,10 +1348,12 @@ kbd {
   opacity: 0.95;
   pointer-events: none;
 }
-.wave polyline {
-  fill: none;
+.wave path {
+  fill: #fff;
+  fill-opacity: 0.78;
   stroke: #fff;
-  stroke-width: 1.2;
+  stroke-width: 0.8;
+  stroke-linejoin: round;
 }
 .playhead {
   position: absolute;

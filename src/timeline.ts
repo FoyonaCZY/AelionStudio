@@ -172,17 +172,20 @@ function clipTint(item: ItemEntity): string | undefined {
 function waveformSvg(result: WaveformPeaks | undefined, width: number, height: number): string {
   if (result === undefined || result.peaks.length === 0 || width < 8) return '';
   const mid = height / 2;
+  const amplitude = height * 0.42;
   const step = width / result.peaks.length;
-  const points: string[] = [];
+  const top: string[] = [];
+  const bottom: string[] = [];
   result.peaks.forEach((peak, index) => {
     const max = Math.max(0, ...(peak.max.length > 0 ? peak.max : [0]));
     const min = Math.min(0, ...(peak.min.length > 0 ? peak.min : [0]));
-    const x = index * step;
-    const y1 = mid - max * (height * 0.42);
-    const y2 = mid - min * (height * 0.42);
-    points.push(`${x.toFixed(1)},${y1.toFixed(1)} ${x.toFixed(1)},${y2.toFixed(1)}`);
+    const x = (index + 0.5) * step;
+    top.push(`${x.toFixed(1)},${(mid - max * amplitude).toFixed(1)}`);
+    bottom.push(`${x.toFixed(1)},${(mid - min * amplitude).toFixed(1)}`);
   });
-  return `<svg class="wave" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><polyline points="${points.join(' ')}" /></svg>`;
+  if (top[0] === undefined) return '';
+  const d = `M ${top.join(' L ')} L ${[...bottom].reverse().join(' L ')} Z`;
+  return `<svg class="wave" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><path d="${d}" /></svg>`;
 }
 
 function rulerHtml(
