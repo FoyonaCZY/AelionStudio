@@ -1040,7 +1040,11 @@ export class Studio {
       return;
     }
     if (name === 'split') {
-      const id = this.view.selectedItemId;
+      let id = this.view.selectedItemId;
+      if (id === undefined && this.view.selectedMarkerId !== undefined) {
+        const marker = this.engine.project?.markers[this.view.selectedMarkerId];
+        if (marker?.owner.type === 'item') id = marker.owner.id;
+      }
       if (id === undefined) return;
       this.run('分割', () => {
         const right = splitAt(this.engine, id, this.view.currentTimeUs);
@@ -1637,7 +1641,8 @@ export class Studio {
     const flag = target.closest('[data-act]');
     if (flag !== null) return;
     const markerNode = target.closest<HTMLElement>('[data-marker]');
-    if (markerNode?.dataset.marker !== undefined) {
+    const hostItemFromMarker = markerNode?.dataset.item;
+    if (markerNode?.dataset.marker !== undefined && hostItemFromMarker === undefined) {
       this.view.selectedMarkerId = markerNode.dataset.marker;
       this.view.selectedItemId = undefined;
       this.view.selectedTransitionId = undefined;
@@ -1706,7 +1711,10 @@ export class Studio {
     if (itemId === undefined) return;
     this.view.selectedItemId = itemId;
     this.view.selectedTransitionId = undefined;
-    this.view.selectedMarkerId = undefined;
+    this.view.selectedMarkerId =
+      markerNode?.dataset.marker !== undefined && hostItemFromMarker === itemId
+        ? markerNode.dataset.marker
+        : undefined;
     this.view.selectedTrackId = itemNode.dataset.track;
     const item = selected(this.engine.project, itemId);
     if (item === undefined) return;
@@ -1718,7 +1726,12 @@ export class Studio {
       return;
     }
     const edge = target.closest<HTMLElement>('[data-edge]')?.dataset.edge;
-    if (this.view.tool === 'select' && edge !== 'start' && edge !== 'end') {
+    if (
+      this.view.tool === 'select' &&
+      edge !== 'start' &&
+      edge !== 'end' &&
+      markerNode?.dataset.marker === undefined
+    ) {
       void this.#seek(item.range.startUs);
     }
     const kind: Gesture['kind'] =

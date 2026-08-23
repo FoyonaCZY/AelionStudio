@@ -81,7 +81,14 @@ export function snapTime(
       transition.range.startUs + transition.range.durationUs,
     );
   }
-  for (const marker of Object.values(project.markers)) candidates.push(marker.timeUs);
+  for (const marker of Object.values(project.markers)) {
+    if (marker.owner.type === 'sequence') {
+      candidates.push(marker.timeUs);
+      continue;
+    }
+    const item = project.items[marker.owner.id];
+    if (item !== undefined) candidates.push(item.range.startUs + marker.timeUs);
+  }
   let best = timeUs;
   let bestDelta = thresholdUs + 1;
   for (const candidate of candidates) {
