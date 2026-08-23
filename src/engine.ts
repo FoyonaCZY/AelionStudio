@@ -152,6 +152,8 @@ export class EditorEngine {
   #onPreviewReady: (() => void) | undefined;
   #onPreviewPointer: ((event: PreviewCanvasPointerEvent) => void) | undefined;
   #quality: PreviewCanvasQuality = 'adaptive';
+  #canvas: HTMLCanvasElement | undefined;
+  #previewSuspended = false;
 
   public get project(): AelionProject | null {
     return this.session?.getSnapshot().project ?? null;
@@ -178,6 +180,7 @@ export class EditorEngine {
   ): Promise<void> {
     this.#onChange = onChange;
     this.#onError = onError;
+    this.#canvas = canvas;
     await this.#createRuntime(onChange, onError);
     this.#attachPreview(canvas, onError);
   }
@@ -187,6 +190,7 @@ export class EditorEngine {
     if (session === undefined) throw new Error('Session failed to start');
     if (this.project?.projectId === projectId && this.persistence !== undefined) {
       normalizeMediaFitToFrame(this);
+      this.#resumePreview();
       await this.renderFrame(0);
       return true;
     }
@@ -198,6 +202,7 @@ export class EditorEngine {
     await this.#rebindAssets();
     await this.#attachPersistence(false);
     normalizeMediaFitToFrame(this);
+    this.#resumePreview();
     await this.renderFrame(0);
     return true;
   }
@@ -227,6 +232,7 @@ export class EditorEngine {
     this.ids.observe(this.project);
     await this.#attachPersistence(true);
     await this.persistence?.flush();
+    this.#resumePreview();
     await this.renderFrame(0);
     return projectId;
   }
@@ -246,6 +252,7 @@ export class EditorEngine {
   }
 
   async #detachProject(): Promise<void> {
+    this.#previewSuspended = true;
     this.endGesture();
     const session = this.session;
     if (session?.player.state === 'playing') await session.player.pause();
@@ -254,6 +261,18 @@ export class EditorEngine {
     if (persistence !== undefined) await persistence.dispose();
     this.#releaseBoundAssets();
     this.ids.reset();
+    this.preview?.dispose();
+    this.preview = undefined;
+    this.clearPreview();
+  }
+
+  #resumePreview(): void {
+    this.#previewSuspended = false;
+    const canvas = this.#canvas;
+    const onError = this.#onError;
+    if (this.preview === undefined && canvas !== undefined && onError !== undefined) {
+      this.#attachPreview(canvas, onError);
+    }
   }
 
   async #attachPersistence(saveInitial: boolean): Promise<void> {
@@ -298,9 +317,24 @@ export class EditorEngine {
     return this.session?.getSnapshot().renderIr?.durationUs ?? 0;
   }
 
+  public clearPreview(): void {
+    const canvas = this.#canvas;
+    if (canvas === undefined) return;
+    const context = canvas.getContext('2d');
+    if (context === null) return;
+    context.save();
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.fillStyle = '#0b0b0b';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.restore();
+  }
+
   public async renderFrame(timeUs: number): Promise<void> {
     const durationUs = this.renderDurationUs;
-    if (durationUs <= 0) return;
+    if (this.#previewSuspended || durationUs <= 0) {
+      this.clearPreview();
+      return;
+    }
     await this.preview?.render(Math.min(Math.max(0, timeUs), durationUs - 1));
   }
 
