@@ -5,7 +5,7 @@
   "description": "Browser-based multi-track video editor. Media never leaves the machine and export runs locally through WebCodecs.",
   "license": "MIT",
   "author": "FoyonaCZY",
-  "homepage": "https://github.com/FoyonaCZY/AelionStudio#readme",
+  "homepage": "https://studio.aelion.chat",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/FoyonaCZY/AelionStudio.git"

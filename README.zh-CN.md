@@ -8,6 +8,7 @@
 
 [English](README.md) · **简体中文**
 
+[![在线体验](https://img.shields.io/badge/体验-studio.aelion.chat-3d8bfd.svg)](https://studio.aelion.chat)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 [![Built on AelionSDK](https://img.shields.io/badge/built%20on-AelionSDK-3d8bfd.svg)](https://github.com/FoyonaCZY/AelionSDK)
 [![No install](https://img.shields.io/badge/install-none-8a5528.svg)](#快速开始)
@@ -20,6 +21,8 @@
 Aelion Studio 是一个完整跑在浏览器标签页里的视频剪辑器。多轨时间线、画面变换、字幕、调音、变速、转场、效果，以及**在本机直接编码 MP4** —— 没有渲染服务器，没有上传等待，没有导出队列。
 
 页面加载完成之后，从剪辑到导出的全过程**不产生任何网络请求**。
+
+**在线体验：** [studio.aelion.chat](https://studio.aelion.chat) —— 同一份应用，不用安装。素材仍然只留在你的浏览器里。
 
 <p align="center">
   <img src="docs/screenshot-editor.png" alt="Aelion Studio 完整编辑界面：时间线、节目监视器与检查器" width="920" />
@@ -142,6 +145,8 @@ Aelion Studio 不传。源文件写进浏览器的 **OPFS**（源私有文件系
 ---
 
 ## 快速开始
+
+托管演示在 **[studio.aelion.chat](https://studio.aelion.chat)**。想先用就打开它；只有要本地跑或改代码时才需要克隆。
 
 Studio 是自包含的。它依赖已发布的 `@aelionsdk/*` 包，因此在任何地方都能装、能构建。
 

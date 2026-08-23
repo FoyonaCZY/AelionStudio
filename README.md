@@ -8,6 +8,7 @@ Nothing uploads. Nothing queues. Your footage never leaves your machine.
 
 **English** · [简体中文](README.zh-CN.md)
 
+[![Try it](https://img.shields.io/badge/try-studio.aelion.chat-3d8bfd.svg)](https://studio.aelion.chat)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 [![Built on AelionSDK](https://img.shields.io/badge/built%20on-AelionSDK-3d8bfd.svg)](https://github.com/FoyonaCZY/AelionSDK)
 [![No install](https://img.shields.io/badge/install-none-8a5528.svg)](#getting-started)
@@ -20,6 +21,8 @@ Nothing uploads. Nothing queues. Your footage never leaves your machine.
 Aelion Studio is a complete video editor that lives in a browser tab. Multi-track timeline, on-canvas transforms, captions, audio mixing, retiming, transitions, effects — and **it encodes MP4 locally**. No render server, no upload wait, no export queue.
 
 Once the page has loaded, editing and exporting make **zero network requests**.
+
+**Try it:** [studio.aelion.chat](https://studio.aelion.chat) — same app, no install. Footage still stays in your browser.
 
 <p align="center">
   <img src="docs/screenshot-editor.png" alt="Aelion Studio workspace with timeline, program monitor and inspector" width="920" />
@@ -142,6 +145,8 @@ Continuous 0.1×–4× speed, reverse, and a two-second **freeze** at the out po
 ---
 
 ## Getting started
+
+The hosted demo is at **[studio.aelion.chat](https://studio.aelion.chat)**. You can start there; cloning is only needed if you want to run or change the app locally.
 
 Studio is self-contained. It depends on the published `@aelionsdk/*` packages, so it installs and builds anywhere.
 
