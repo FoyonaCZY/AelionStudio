@@ -504,8 +504,13 @@ export class Studio {
     on(this.#els.studio, 'change', event => this.#onChange(event));
     on(this.#els.studio, 'input', event => this.#onInput(event));
     on(this.#els.library, 'dragstart', event => this.#onLibraryDrag(event as DragEvent));
+    on(this.#els.library, 'dragover', event => this.#onLibraryDragOver(event as DragEvent));
+    on(this.#els.library, 'drop', event => this.#onLibraryDrop(event as DragEvent));
     on(this.#els.timeline, 'dragover', event => {
       event.preventDefault();
+      event.stopPropagation();
+      const drag = event as DragEvent;
+      if (drag.dataTransfer !== null) drag.dataTransfer.dropEffect = 'copy';
     });
     on(this.#els.timeline, 'drop', event => this.#onTimelineDrop(event as DragEvent));
     on(this.#els.timeline, 'scroll', event => this.#onTimelineScroll(event), { capture: true });
@@ -530,18 +535,8 @@ export class Studio {
     on(document, 'visibilitychange', () => {
       if (document.visibilityState === 'hidden') void this.engine.persistence?.flush();
     });
-    on(this.#els.studio, 'dragover', event => {
-      const drag = event as DragEvent;
-      if (drag.dataTransfer?.types.includes('Files') === true) drag.preventDefault();
-    });
-    on(this.#els.studio, 'drop', event => {
-      const drag = event as DragEvent;
-      const files = [...(drag.dataTransfer?.files ?? [])];
-      if (files.length === 0) return;
-      drag.preventDefault();
-      this.#ignoreTransportKeysUntil = performance.now() + 800;
-      this.#importFiles(files);
-    });
+    on(this.#els.studio, 'dragover', event => this.#onStudioDragOver(event as DragEvent));
+    on(this.#els.studio, 'drop', event => this.#onStudioDrop(event as DragEvent));
     requiredElement('#export-preflight-btn').addEventListener(
       'click',
       () => void this.#preflight(),
@@ -1447,9 +1442,44 @@ export class Studio {
     event.dataTransfer.effectAllowed = 'copy';
   }
 
+  #onLibraryDragOver(event: DragEvent): void {
+    if (!isLibraryPayloadDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'none';
+  }
+
+  #onLibraryDrop(event: DragEvent): void {
+    if (!isLibraryPayloadDrag(event.dataTransfer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  #onStudioDragOver(event: DragEvent): void {
+    if (event.target instanceof Node && this.#els.timeline.contains(event.target)) return;
+    if (isLibraryPayloadDrag(event.dataTransfer)) {
+      event.preventDefault();
+      if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    if (event.dataTransfer?.types.includes('Files') === true) event.preventDefault();
+  }
+
+  #onStudioDrop(event: DragEvent): void {
+    if (isLibraryPayloadDrag(event.dataTransfer)) {
+      event.preventDefault();
+      return;
+    }
+    const files = [...(event.dataTransfer?.files ?? [])];
+    if (files.length === 0) return;
+    event.preventDefault();
+    this.#ignoreTransportKeysUntil = performance.now() + 800;
+    this.#importFiles(files);
+  }
+
   #onTimelineDrop(event: DragEvent): void {
     event.preventDefault();
-    const files = [...(event.dataTransfer?.files ?? [])];
+    event.stopPropagation();
+    const payload = event.dataTransfer?.getData('text/aelion-drop') ?? '';
     const timeUs = hitTimeFromEvent(
       event as unknown as PointerEvent,
       this.#els.timeline,
@@ -1460,17 +1490,15 @@ export class Studio {
     const trackId =
       over?.closest<HTMLElement>('[data-track]')?.dataset.track ??
       fromEvent?.closest<HTMLElement>('[data-track]')?.dataset.track;
-    if (files.length > 0) {
-      this.#importFiles(files, timeUs);
-      return;
-    }
-    const payload = event.dataTransfer?.getData('text/aelion-drop');
-    if (payload !== undefined && payload.length > 0) {
+    if (payload.length > 0) {
       const sourceItemId =
         over?.closest<HTMLElement>('[data-item]')?.dataset.item ??
         fromEvent?.closest<HTMLElement>('[data-item]')?.dataset.item;
       this.#applyDrop(payload, timeUs, trackId, true, sourceItemId);
+      return;
     }
+    const files = [...(event.dataTransfer?.files ?? [])];
+    if (files.length > 0) this.#importFiles(files, timeUs);
   }
 
   #onLibraryDblClick(event: Event): void {
@@ -2702,6 +2730,10 @@ function selected(
   itemId: string | undefined,
 ): ItemEntity | undefined {
   return itemId === undefined || project === null ? undefined : project.items[itemId];
+}
+
+function isLibraryPayloadDrag(transfer: DataTransfer | null): boolean {
+  return transfer?.types.includes('text/aelion-drop') === true;
 }
 
 function libraryPreviewUrls(

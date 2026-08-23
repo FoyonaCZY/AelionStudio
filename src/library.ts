@@ -28,7 +28,7 @@ function tile(
     options.audio === true
       ? `<span class="lib-tile-thumb is-audio">${icon('music', 20)}<em>Audio</em><small>${safeText(hint)}</small></span>`
       : options.thumb !== undefined
-        ? `<span class="lib-tile-thumb"><img alt="" src="${safeText(options.thumb)}"></span>`
+        ? `<span class="lib-tile-thumb"><img alt="" src="${safeText(options.thumb)}" draggable="false"></span>`
         : (preview ??
           `<span class="lib-tile-thumb"><em>${safeText(title.slice(0, 1))}</em></span>`);
   return `<button type="button" class="lib-tile" draggable="true" data-drop="${safeText(kind)}" title="双击添加到时间线，或拖到轨道上">

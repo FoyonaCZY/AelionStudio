@@ -889,6 +889,8 @@ kbd {
 }
 .lib-tile-thumb img {
   object-fit: cover;
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 .lib-tile-thumb.is-preview {
   background: #141414;
