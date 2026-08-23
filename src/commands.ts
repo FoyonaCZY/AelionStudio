@@ -249,6 +249,89 @@ export function renameAsset(engine: EditorEngine, assetId: string, name: string)
   });
 }
 
+export function itemsUsingAsset(project: AelionProject, assetId: string): ItemEntity[] {
+  return Object.values(project.items).filter(item => itemMediaRef(item)?.assetId === assetId);
+}
+
+export function deleteAsset(engine: EditorEngine, assetId: string): void {
+  const project = requireProject(engine);
+  const asset = project.assets[assetId];
+  if (asset === undefined) return;
+  const items = itemsUsingAsset(project, assetId);
+  const itemIds = new Set(items.map(item => item.id));
+  const name = typeof asset.name === 'string' && asset.name.length > 0 ? asset.name : assetId;
+  write(engine, `删除素材 ${name}`, tx => {
+    const removedTransitions = new Set<string>();
+    const removedMarkers = new Set<string>();
+    const removedMaterials = new Set<string>();
+    for (const item of items) {
+      for (const transition of Object.values(project.transitions)) {
+        if (transition.fromItemId !== item.id && transition.toItemId !== item.id) continue;
+        if (removedTransitions.has(transition.id)) continue;
+        removedTransitions.add(transition.id);
+        tx.listRemove('sequences', transition.sequenceId, ['transitionIds'], transition.id);
+        tx.deleteEntity('transitions', transition.id);
+        if (!removedMaterials.has(transition.materialInstanceId)) {
+          removedMaterials.add(transition.materialInstanceId);
+          tx.deleteEntity('materialInstances', transition.materialInstanceId);
+        }
+      }
+      const ownedMarkerIds = Object.values(project.markers)
+        .filter(marker => {
+          const owner = marker.owner;
+          return (
+            owner !== null &&
+            typeof owner === 'object' &&
+            !Array.isArray(owner) &&
+            (owner as JsonObject).type === 'item' &&
+            (owner as JsonObject).id === item.id
+          );
+        })
+        .map(marker => marker.id);
+      for (const markerId of new Set([...(item.markerIds ?? []), ...ownedMarkerIds])) {
+        if (removedMarkers.has(markerId)) continue;
+        removedMarkers.add(markerId);
+        for (const sequence of Object.values(project.sequences)) {
+          if (sequence.markerIds.includes(markerId)) {
+            tx.listRemove('sequences', sequence.id, ['markerIds'], markerId);
+          }
+        }
+        if (project.markers[markerId] !== undefined) tx.deleteEntity('markers', markerId);
+      }
+    }
+    for (const group of Object.values(project.linkGroups)) {
+      const removed = group.itemIds.filter(id => itemIds.has(id));
+      if (removed.length === 0) continue;
+      const remaining = group.itemIds.filter(id => !itemIds.has(id));
+      if (remaining.length < 2) {
+        for (const remainingId of remaining) {
+          if (project.items[remainingId]?.linkGroupId === group.id) {
+            tx.removeField('items', remainingId, ['linkGroupId']);
+          }
+        }
+        tx.deleteEntity('linkGroups', group.id);
+      } else {
+        for (const id of removed) {
+          tx.listRemove('linkGroups', group.id, ['itemIds'], id);
+          if (group.syncOffsetsUs !== undefined && Object.hasOwn(group.syncOffsetsUs, id)) {
+            tx.removeField('linkGroups', group.id, ['syncOffsetsUs', id]);
+          }
+        }
+      }
+    }
+    for (const item of items) {
+      tx.listRemove('tracks', item.trackId, ['itemIds'], item.id);
+      tx.deleteEntity('items', item.id);
+      for (const materialId of item.materialInstanceIds) {
+        if (removedMaterials.has(materialId)) continue;
+        removedMaterials.add(materialId);
+        tx.deleteEntity('materialInstances', materialId);
+      }
+    }
+    tx.deleteEntity('assets', assetId);
+  });
+}
+
 export function insertGenerated(
   engine: EditorEngine,
   kind: Exclude<LibraryDropKind, `asset:${string}` | `effect:${string}` | `transition:${string}`>,

@@ -21,7 +21,9 @@ import {
   insertCaptionCue,
   insertExistingAsset,
   insertGenerated,
+  itemsUsingAsset,
   renameAsset,
+  deleteAsset,
   neighborPair,
   removeTransition,
   resizeTransition,
@@ -695,7 +697,13 @@ export class Studio {
       }
       return [
         menuItem('apply-drop', '添加到时间线'),
-        ...(hit.drop.startsWith('asset:') ? [menuItem('rename-asset', '重命名')] : []),
+        ...(hit.drop.startsWith('asset:')
+          ? [
+              menuItem('rename-asset', '重命名'),
+              menuSep,
+              menuItem('delete-asset', '删除', { danger: true }),
+            ]
+          : []),
         menuSep,
         menuItem('import', '导入媒体…'),
         menuItem('import-url', '从 URL 导入…'),
@@ -832,6 +840,10 @@ export class Studio {
     }
     if (id === 'rename-asset' && hit.drop?.startsWith('asset:') === true) {
       this.#openRenameAsset(hit.drop.slice('asset:'.length));
+      return;
+    }
+    if (id === 'delete-asset' && hit.drop?.startsWith('asset:') === true) {
+      this.#deleteLibraryAsset(hit.drop.slice('asset:'.length));
       return;
     }
     if (id === 'lib-view') {
@@ -2665,6 +2677,26 @@ export class Studio {
     this.run('导入 URL', async () => {
       const imported = await this.engine.importUrl(url, this.view.currentTimeUs);
       this.view.selectedItemId = imported.videoItemId ?? imported.audioItemId;
+    });
+  }
+
+  #deleteLibraryAsset(assetId: string): void {
+    const project = this.engine.project;
+    const asset = project?.assets[assetId];
+    if (project === null || project === undefined || asset === undefined) return;
+    const name = typeof asset.name === 'string' && asset.name.length > 0 ? asset.name : '未命名素材';
+    const used = itemsUsingAsset(project, assetId).length;
+    const message =
+      used > 0
+        ? `删除素材「${name}」？时间线上的 ${used.toString()} 个片段会一并删除。`
+        : `删除素材「${name}」？`;
+    if (!window.confirm(message)) return;
+    const selected = this.view.selectedItemId;
+    this.run('删除素材', () => {
+      deleteAsset(this.engine, assetId);
+      if (selected !== undefined && this.engine.project?.items[selected] === undefined) {
+        this.view.selectedItemId = undefined;
+      }
     });
   }
 
