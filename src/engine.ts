@@ -175,6 +175,7 @@ export class EditorEngine {
   #quality: PreviewCanvasQuality = 'adaptive';
   #canvas: HTMLCanvasElement | undefined;
   #previewSuspended = false;
+  #startingPlayback = false;
 
   public get project(): AelionProject | null {
     return this.session?.getSnapshot().project ?? null;
@@ -371,7 +372,13 @@ export class EditorEngine {
   public async togglePlayback(timeUs: number): Promise<'playing' | 'paused'> {
     const session = this.session;
     if (session === undefined) return 'paused';
-    if (session.player.state === 'playing') {
+    const contextState = session.player.getStats().resources.audio.contextState;
+    if (
+      session.player.state === 'playing' ||
+      this.#startingPlayback ||
+      contextState === 'running'
+    ) {
+      this.#startingPlayback = false;
       await session.player.pause();
       return 'paused';
     }
@@ -381,9 +388,14 @@ export class EditorEngine {
     }
     const playheadUs = timeUs < 0 || timeUs >= durationUs ? 0 : timeUs;
     this.abortBackgroundFilmstrips();
-    await session.player.seek(playheadUs);
-    await session.player.play();
-    return 'playing';
+    this.#startingPlayback = true;
+    try {
+      await session.player.seek(playheadUs);
+      await session.player.play();
+      return 'playing';
+    } finally {
+      this.#startingPlayback = false;
+    }
   }
 
   public get liveEdit(): AelionInteractiveEdit | undefined {
@@ -556,6 +568,7 @@ export class EditorEngine {
       { label: `导入 ${mediaFile.name}` },
     );
 
+    await this.#silenceIdleTransport();
     void this.#captureThumb(assetId, kind);
     return {
       assetId,
@@ -630,6 +643,7 @@ export class EditorEngine {
       },
       { label: `导入 ${mediaFile.name}` },
     );
+    void this.#silenceIdleTransport();
     void this.#captureThumb(assetId, 'image');
     return {
       assetId,
@@ -739,6 +753,7 @@ export class EditorEngine {
       },
       { label: `导入 URL` },
     );
+    await this.#silenceIdleTransport();
     void this.#captureThumb(assetId, kind);
     return {
       assetId,
@@ -954,6 +969,7 @@ export class EditorEngine {
       allowBackendFallback: true,
     });
     this.session = session;
+    this.#guardIdleTransport(session.player);
     this.#unsubscribe = session.subscribe(event => {
       if (event.type === 'project-changed') {
         this.ids.observe(session.getSnapshot().project);
@@ -967,6 +983,31 @@ export class EditorEngine {
         }
       }
     });
+  }
+
+  #guardIdleTransport(player: {
+    readonly state: string;
+    invalidate?: (changeSet: unknown) => void;
+  }): void {
+    const invalidate = player.invalidate?.bind(player);
+    if (invalidate === undefined) return;
+    player.invalidate = changeSet => {
+      if (player.state !== 'playing') return;
+      invalidate(changeSet);
+    };
+  }
+
+  async #silenceIdleTransport(): Promise<void> {
+    const player = this.session?.player as
+      | {
+          readonly state: string;
+          pause(): Promise<void>;
+          reset?: () => Promise<void>;
+        }
+      | undefined;
+    if (player === undefined || player.state === 'playing') return;
+    await player.pause();
+    await player.reset?.();
   }
 
   #attachPreview(canvas: HTMLCanvasElement, onError: (message: string) => void): void {

@@ -212,6 +212,7 @@ export class Studio {
   #home = createHomeState();
   #homeProjects: readonly ProjectSummary[] = [];
   #routeTail: Promise<void> = Promise.resolve();
+  #ignoreTransportKeysUntil = 0;
 
   public async start(): Promise<void> {
     this.#layout();
@@ -469,6 +470,7 @@ export class Studio {
     on(this.#els.fileMedia, 'change', () => {
       const files = [...(this.#els.fileMedia.files ?? [])];
       this.#els.fileMedia.value = '';
+      this.#ignoreTransportKeysUntil = performance.now() + 800;
       if (files.length > 0) this.#importFiles(files);
     });
     on(this.#els.fileSub, 'change', () => {
@@ -533,6 +535,7 @@ export class Studio {
       const files = [...(drag.dataTransfer?.files ?? [])];
       if (files.length === 0) return;
       drag.preventDefault();
+      this.#ignoreTransportKeysUntil = performance.now() + 800;
       this.#importFiles(files);
     });
     requiredElement('#export-preflight-btn').addEventListener(
@@ -1851,6 +1854,7 @@ export class Studio {
     }
     if (event.code === 'Space') {
       event.preventDefault();
+      if (performance.now() < this.#ignoreTransportKeysUntil) return;
       void this.#togglePlay();
       return;
     }
