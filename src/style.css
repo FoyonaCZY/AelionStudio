@@ -1349,11 +1349,9 @@ kbd {
   pointer-events: none;
 }
 .wave path {
-  fill: #fff;
-  fill-opacity: 0.78;
+  fill: none;
   stroke: #fff;
-  stroke-width: 0.8;
-  stroke-linejoin: round;
+  stroke-linecap: butt;
 }
 .playhead {
   position: absolute;

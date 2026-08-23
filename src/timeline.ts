@@ -28,7 +28,10 @@ export { TRACK_HEADER_WIDTH } from './view-state.js';
 const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
 
 export interface WaveformPeaks {
+  readonly sampleRate?: number;
   readonly peaks: readonly {
+    readonly startFrame?: number;
+    readonly frameCount?: number;
     readonly min: readonly number[];
     readonly max: readonly number[];
   }[];
@@ -169,23 +172,50 @@ function clipTint(item: ItemEntity): string | undefined {
   return undefined;
 }
 
-function waveformSvg(result: WaveformPeaks | undefined, width: number, height: number): string {
+function peaksForClip(
+  result: WaveformPeaks,
+  item: ItemEntity,
+): WaveformPeaks['peaks'] {
+  const sampleRate = result.sampleRate;
+  if (sampleRate === undefined || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return result.peaks;
+  }
+  const startFrame = Math.floor((item.range.startUs * sampleRate) / 1_000_000);
+  const endFrame = Math.ceil(
+    ((item.range.startUs + item.range.durationUs) * sampleRate) / 1_000_000,
+  );
+  const scoped = result.peaks.filter(peak => {
+    const peakStart = peak.startFrame;
+    const peakCount = peak.frameCount;
+    if (peakStart === undefined || peakCount === undefined) return true;
+    return peakStart + peakCount > startFrame && peakStart < endFrame;
+  });
+  return scoped.length > 0 ? scoped : result.peaks;
+}
+
+function waveformSvg(
+  result: WaveformPeaks | undefined,
+  item: ItemEntity,
+  width: number,
+  height: number,
+): string {
   if (result === undefined || result.peaks.length === 0 || width < 8) return '';
+  const peaks = peaksForClip(result, item);
+  if (peaks.length === 0) return '';
   const mid = height / 2;
-  const amplitude = height * 0.42;
-  const step = width / result.peaks.length;
-  const top: string[] = [];
-  const bottom: string[] = [];
-  result.peaks.forEach((peak, index) => {
+  const amplitude = height * 0.46;
+  const step = width / peaks.length;
+  const stroke = Math.max(0.6, step * 0.85);
+  const commands: string[] = [];
+  peaks.forEach((peak, index) => {
     const max = Math.max(0, ...(peak.max.length > 0 ? peak.max : [0]));
     const min = Math.min(0, ...(peak.min.length > 0 ? peak.min : [0]));
     const x = (index + 0.5) * step;
-    top.push(`${x.toFixed(1)},${(mid - max * amplitude).toFixed(1)}`);
-    bottom.push(`${x.toFixed(1)},${(mid - min * amplitude).toFixed(1)}`);
+    const y1 = mid - max * amplitude;
+    const y2 = mid - min * amplitude;
+    commands.push(`M ${x.toFixed(2)} ${y1.toFixed(1)} L ${x.toFixed(2)} ${y2.toFixed(1)}`);
   });
-  if (top[0] === undefined) return '';
-  const d = `M ${top.join(' L ')} L ${[...bottom].reverse().join(' L ')} Z`;
-  return `<svg class="wave" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><path d="${d}" /></svg>`;
+  return `<svg class="wave" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none"><path d="${commands.join(' ')}" stroke-width="${stroke.toFixed(2)}" /></svg>`;
 }
 
 function rulerHtml(
@@ -274,7 +304,7 @@ export function renderTimeline(options: {
               const tint = clipTint(item);
               const wave =
                 item.type === 'audio'
-                  ? waveformSvg(options.waveforms.get(item.id), width, height - 8)
+                  ? waveformSvg(options.waveforms.get(item.id), item, width, height - 8)
                   : '';
               const filmHtml =
                 film === undefined

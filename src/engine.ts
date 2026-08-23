@@ -802,9 +802,10 @@ export class EditorEngine {
     const cached = this.waveforms.get(item.id);
     if (cached !== undefined) return cached;
     try {
+      const durationSec = Math.max(1, item.range.durationUs / 1_000_000);
       const result = await this.session.audio.waveform({
         itemIds: [item.id],
-        maxPoints: 240,
+        maxPoints: Math.min(6_000, Math.max(400, Math.round(durationSec * 100))),
         signal: this.#waveformAbort.signal,
       });
       this.waveforms.set(item.id, result);
