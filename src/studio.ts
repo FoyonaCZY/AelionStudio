@@ -21,9 +21,11 @@ import {
   insertCaptionCue,
   insertExistingAsset,
   insertGenerated,
+  itemCoveringTime,
   itemsUsingAsset,
   renameAsset,
   deleteAsset,
+  removeMarker,
   neighborPair,
   removeTransition,
   resizeTransition,
@@ -384,7 +386,7 @@ export class Studio {
       });
     }
     if (this.#programGesture === undefined) {
-      const timelineKey = `${snap?.revision?.toString() ?? ''}:${this.view.selectedItemId ?? ''}:${this.view.selectedTransitionId ?? ''}:${this.view.selectedTrackId ?? ''}:${this.view.pixelsPerSecond.toString()}:${durationUs.toString()}:${this.engine.waveforms.size.toString()}:${this.engine.thumbs.size.toString()}:${[...this.engine.filmstrips.keys()].join(',')}:${project === null ? '' : Object.keys(project.transitions).join(',')}`;
+      const timelineKey = `${snap?.revision?.toString() ?? ''}:${this.view.selectedItemId ?? ''}:${this.view.selectedTransitionId ?? ''}:${this.view.selectedMarkerId ?? ''}:${this.view.selectedTrackId ?? ''}:${this.view.pixelsPerSecond.toString()}:${durationUs.toString()}:${this.engine.waveforms.size.toString()}:${this.engine.thumbs.size.toString()}:${[...this.engine.filmstrips.keys()].join(',')}:${project === null ? '' : Object.keys(project.transitions).join(',')}`;
       if (timelineKey !== this.#timelineKey) {
         this.#timelineKey = timelineKey;
         renderTimeline({
@@ -624,10 +626,19 @@ export class Studio {
     }
     if (this.#els.timeline.contains(target)) {
       const timeUs = hitTimeFromEvent(event, this.#els.timeline, this.view);
+      const markerId = target.closest<HTMLElement>('[data-marker]')?.dataset.marker;
+      if (markerId !== undefined) {
+        this.view.selectedMarkerId = markerId;
+        this.view.selectedItemId = undefined;
+        this.view.selectedTransitionId = undefined;
+        this.scheduleRender();
+        return { kind: 'marker', markerId, timeUs };
+      }
       const transitionId = target.closest<HTMLElement>('[data-transition]')?.dataset.transition;
       if (transitionId !== undefined) {
         this.view.selectedTransitionId = transitionId;
         this.view.selectedItemId = undefined;
+        this.view.selectedMarkerId = undefined;
         this.view.selectedTrackId = target.closest<HTMLElement>('[data-track]')?.dataset.track;
         this.scheduleRender();
         return {
@@ -641,6 +652,7 @@ export class Studio {
       if (itemId !== undefined) {
         this.view.selectedItemId = itemId;
         this.view.selectedTransitionId = undefined;
+        this.view.selectedMarkerId = undefined;
         this.view.selectedTrackId = target.closest<HTMLElement>('[data-track]')?.dataset.track;
         this.scheduleRender();
         return {
@@ -731,9 +743,13 @@ export class Studio {
         menuItem('transition-dissolve', '交叉叠化'),
         menuSep,
         menuItem('toggle-item', item?.enabled === false ? '启用' : '禁用'),
+        menuItem('marker-here', '在此处打点', { shortcut: 'M' }),
         menuItem('delete', '删除', { shortcut: 'Del' }),
         menuItem('ripple-delete', '波纹删除'),
       ];
+    }
+    if (hit.kind === 'marker') {
+      return [menuItem('delete-marker', '删除打点', { shortcut: 'Del', danger: true })];
     }
     if (hit.kind === 'transition') {
       return [
@@ -855,7 +871,15 @@ export class Studio {
       return;
     }
     if (id === 'marker-here') {
-      this.run('标记', () => addMarker(this.engine, hit.timeUs ?? this.view.currentTimeUs));
+      this.#placeMarker(hit.timeUs ?? this.view.currentTimeUs, {
+        ...(hit.itemId === undefined ? {} : { itemId: hit.itemId }),
+        ...(hit.trackId === undefined ? {} : { trackId: hit.trackId }),
+        looseItem: hit.kind === 'clip',
+      });
+      return;
+    }
+    if (id === 'delete-marker' && hit.markerId !== undefined) {
+      this.#deleteMarker(hit.markerId);
       return;
     }
     if (id === 'play') {
@@ -1024,6 +1048,11 @@ export class Studio {
       return;
     }
     if (name === 'delete' || name === 'ripple-delete') {
+      const markerId = this.view.selectedMarkerId;
+      if (markerId !== undefined) {
+        this.#deleteMarker(markerId);
+        return;
+      }
       const transitionId = this.view.selectedTransitionId;
       if (transitionId !== undefined) {
         this.run('删除转场', () => {
@@ -1043,7 +1072,12 @@ export class Studio {
     if (name === 'add-v') this.run('添加视频轨', () => void addTrack(this.engine, 'visual'));
     if (name === 'add-a') this.run('添加音频轨', () => void addTrack(this.engine, 'audio'));
     if (name === 'add-c') this.run('添加字幕轨', () => void addTrack(this.engine, 'caption'));
-    if (name === 'marker') this.run('标记', () => addMarker(this.engine, this.view.currentTimeUs));
+    if (name === 'marker') {
+      this.#placeMarker(this.view.currentTimeUs, {
+        ...(this.view.selectedItemId === undefined ? {} : { itemId: this.view.selectedItemId }),
+        ...(this.view.selectedTrackId === undefined ? {} : { trackId: this.view.selectedTrackId }),
+      });
+    }
     if (name === 'diagnostics') this.#showDiagnostics();
     if (name === 'capability') void this.#showCapability();
     if (name === 'shortcuts') this.#showInfo('快捷键', SHORTCUTS);
@@ -1601,6 +1635,14 @@ export class Studio {
     if (!(target instanceof Element)) return;
     const flag = target.closest('[data-act]');
     if (flag !== null) return;
+    const markerNode = target.closest<HTMLElement>('[data-marker]');
+    if (markerNode?.dataset.marker !== undefined) {
+      this.view.selectedMarkerId = markerNode.dataset.marker;
+      this.view.selectedItemId = undefined;
+      this.view.selectedTransitionId = undefined;
+      this.scheduleRender();
+      return;
+    }
     const transitionNode = target.closest<HTMLElement>('[data-transition]');
     const itemNode = target.closest<HTMLElement>('[data-item]');
     const trackNode = target.closest<HTMLElement>('[data-track]');
@@ -1610,6 +1652,7 @@ export class Studio {
       const transition = this.engine.project?.transitions[transitionId];
       this.view.selectedTransitionId = transitionId;
       this.view.selectedItemId = undefined;
+      this.view.selectedMarkerId = undefined;
       this.view.selectedTrackId = transitionNode.dataset.track;
       if (transition !== undefined && this.view.tool === 'select') {
         void this.#seek(transition.range.startUs);
@@ -1641,6 +1684,7 @@ export class Studio {
       this.view.selectedTrackId = trackNode?.dataset.track;
       if (itemNode === null) {
         this.view.selectedTransitionId = undefined;
+        this.view.selectedMarkerId = undefined;
         void this.#seek(timeUs);
         this.#gesture = {
           kind: 'playhead',
@@ -1661,6 +1705,7 @@ export class Studio {
     if (itemId === undefined) return;
     this.view.selectedItemId = itemId;
     this.view.selectedTransitionId = undefined;
+    this.view.selectedMarkerId = undefined;
     this.view.selectedTrackId = itemNode.dataset.track;
     const item = selected(this.engine.project, itemId);
     if (item === undefined) return;
@@ -2680,6 +2725,36 @@ export class Studio {
     });
   }
 
+  #placeMarker(
+    timeUs: number,
+    host: { readonly itemId?: string; readonly trackId?: string; readonly looseItem?: boolean } = {},
+  ): void {
+    const project = this.engine.project;
+    if (project === null) return;
+    const item = itemCoveringTime(project, timeUs, {
+      ...(host.itemId === undefined ? {} : { itemId: host.itemId }),
+      ...(host.trackId === undefined ? {} : { trackId: host.trackId }),
+      ...(host.looseItem === undefined ? {} : { looseItem: host.looseItem }),
+    });
+    if (item === undefined) {
+      this.setStatus('把打点落到片段上', true);
+      return;
+    }
+    this.run('打点', () => {
+      const id = addMarker(this.engine, timeUs, '标记', { itemId: item.id });
+      this.view.selectedMarkerId = id;
+      this.view.selectedItemId = item.id;
+      this.view.selectedTransitionId = undefined;
+    });
+  }
+
+  #deleteMarker(markerId: string): void {
+    this.run('删除打点', () => {
+      removeMarker(this.engine, markerId);
+      if (this.view.selectedMarkerId === markerId) this.view.selectedMarkerId = undefined;
+    });
+  }
+
   #deleteLibraryAsset(assetId: string): void {
     const project = this.engine.project;
     const asset = project?.assets[assetId];
@@ -2818,7 +2893,7 @@ const SHORTCUTS = `Space  播放/暂停
 K      暂停
 L      播放
 S      分割
-M      标记
+M      在片段上打点
 V/C    选择 / 剃刀
 Y/U/N  滑移 / 滑动 / 滚动
 ←/→    逐帧  Shift 十帧

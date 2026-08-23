@@ -638,14 +638,18 @@ export function materialInstanceEntity(options: {
 
 export function markerEntity(options: {
   readonly id: string;
-  readonly sequenceId: string;
   readonly timeUs: number;
   readonly label: string;
   readonly color?: string;
+  readonly sequenceId?: string;
+  readonly itemId?: string;
 }): MarkerEntity {
   return {
     id: options.id,
-    owner: { type: 'sequence', id: options.sequenceId },
+    owner:
+      options.itemId === undefined
+        ? { type: 'sequence', id: options.sequenceId ?? '' }
+        : { type: 'item', id: options.itemId },
     timeUs: options.timeUs,
     durationUs: 0,
     label: options.label,

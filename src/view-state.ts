@@ -16,6 +16,7 @@ export type InspectorTab = 'clip' | 'video' | 'audio' | 'effect' | 'speed';
 export interface ViewState {
   selectedItemId: string | undefined;
   selectedTransitionId: string | undefined;
+  selectedMarkerId: string | undefined;
   selectedTrackId: string | undefined;
   tool: EditTool;
   currentTimeUs: number;
@@ -44,6 +45,7 @@ export function createViewState(): ViewState {
   return {
     selectedItemId: undefined,
     selectedTransitionId: undefined,
+    selectedMarkerId: undefined,
     selectedTrackId: undefined,
     tool: 'select',
     currentTimeUs: 0,
@@ -72,6 +74,7 @@ export function createViewState(): ViewState {
 export function resetViewState(view: ViewState): void {
   view.selectedItemId = undefined;
   view.selectedTransitionId = undefined;
+  view.selectedMarkerId = undefined;
   view.selectedTrackId = undefined;
   view.tool = 'select';
   view.currentTimeUs = 0;

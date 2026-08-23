@@ -97,6 +97,22 @@ function trackKindIcon(kind: TrackEntity['kind']): IconName {
   return 'camera';
 }
 
+function clipMarkerButton(
+  marker: {
+    readonly id: string;
+    readonly timeUs: number;
+    readonly color?: string;
+    readonly label?: string;
+  },
+  item: ItemEntity,
+  trackId: string,
+  view: ViewState,
+): string {
+  const left = ((item.range.startUs + marker.timeUs) / 1_000_000) * view.pixelsPerSecond;
+  const selected = marker.id === view.selectedMarkerId;
+  return `<button type="button" class="clip-marker${selected ? ' selected' : ''}" data-marker="${safeText(marker.id)}" data-item="${safeText(item.id)}" data-track="${safeText(trackId)}" style="left:${left.toFixed(2)}px;--mc:${safeText(marker.color ?? '#e85d4c')}" title="${safeText(marker.label ?? '标记')}"></button>`;
+}
+
 function transitionBlock(
   transition: TransitionEntity,
   track: TrackEntity,
@@ -223,7 +239,10 @@ export function renderTimeline(options: {
           denominator: 1,
         }) as { numerator: number; denominator: number });
   const tracks = project === null ? [] : orderedTracks(project);
-  const markers = project === null ? [] : Object.values(project.markers);
+  const markers =
+    project === null
+      ? []
+      : Object.values(project.markers).filter(marker => marker.owner.type === 'sequence');
   const playheadX = usToX(view.currentTimeUs, view) + TRACK_HEADER_WIDTH;
   const contentWidth = TRACK_HEADER_WIDTH + laneWidth;
 
@@ -259,7 +278,13 @@ export function renderTimeline(options: {
                   ? ''
                   : `<span class="clip-film" style="background-image:url('${safeText(film)}')"></span>`;
               const tintStyle = tint === undefined ? '' : `background:${safeText(tint)};`;
-              return `<button type="button" class="${clipClass(item, item.id === view.selectedItemId, film !== undefined)}" data-item="${safeText(item.id)}" data-track="${safeText(track.id)}" style="left:${left.toFixed(2)}px;width:${width.toFixed(2)}px;height:${height - 8}px;${tintStyle}">
+              const clipMarks = Object.values(project?.markers ?? {})
+                .filter(
+                  marker => marker.owner.type === 'item' && marker.owner.id === item.id,
+                )
+                .map(marker => clipMarkerButton(marker, item, track.id, view))
+                .join('');
+              return `${clipMarks}<button type="button" class="${clipClass(item, item.id === view.selectedItemId, film !== undefined)}" data-item="${safeText(item.id)}" data-track="${safeText(track.id)}" style="left:${left.toFixed(2)}px;width:${width.toFixed(2)}px;height:${height - 8}px;${tintStyle}">
                 ${filmHtml}
                 <i class="clip-handle start" data-edge="start"></i>
                 <span class="clip-label">${safeText(clipLabel(item))}</span>
@@ -298,7 +323,7 @@ export function renderTimeline(options: {
     ${markers
       .map(marker => {
         const x = usToX(marker.timeUs, view) + TRACK_HEADER_WIDTH;
-        return `<button type="button" class="marker" data-marker="${safeText(marker.id)}" style="left:${x.toFixed(2)}px;--mc:${safeText(marker.color ?? '#e85d4c')}" title="${safeText(marker.label ?? '标记')}"></button>`;
+        return `<button type="button" class="marker${marker.id === view.selectedMarkerId ? ' selected' : ''}" data-marker="${safeText(marker.id)}" style="left:${x.toFixed(2)}px;--mc:${safeText(marker.color ?? '#e85d4c')}" title="${safeText(marker.label ?? '标记')}"></button>`;
       })
       .join('')}
     </div>
@@ -333,9 +358,14 @@ export function syncTimelineViewport(
   if (project === null) return;
   for (const marker of Object.values(project.markers)) {
     const node = root.querySelector(`[data-marker="${CSS.escape(marker.id)}"]`);
-    if (node instanceof HTMLElement) {
-      node.style.left = `${(usToX(marker.timeUs, view) + TRACK_HEADER_WIDTH).toFixed(2)}px`;
+    if (!(node instanceof HTMLElement)) continue;
+    if (marker.owner.type === 'item') {
+      const item = project.items[marker.owner.id];
+      if (item === undefined) continue;
+      node.style.left = `${(((item.range.startUs + marker.timeUs) / 1_000_000) * view.pixelsPerSecond).toFixed(2)}px`;
+      continue;
     }
+    node.style.left = `${(usToX(marker.timeUs, view) + TRACK_HEADER_WIDTH).toFixed(2)}px`;
   }
 }
 

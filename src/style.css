@@ -1371,16 +1371,34 @@ kbd {
   border-right: 5px solid transparent;
   border-left: 5px solid transparent;
 }
-.marker {
+.marker,
+.clip-marker {
   position: absolute;
   top: 0;
-  width: 0;
-  height: 0;
-  padding: 0;
-  border: 6px solid transparent;
-  border-top-color: var(--mc, #e24b3b);
-  background: transparent;
   z-index: 7;
+  width: 14px;
+  height: 16px;
+  margin: 0 0 0 -7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.marker::before,
+.clip-marker::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  border: 6px solid transparent;
+  border-top-color: var(--mc, #e85d4c);
+  transform: translateX(-50%);
+}
+.clip-marker {
+  z-index: 5;
+}
+.marker.selected::before,
+.clip-marker.selected::before {
+  border-top-color: #3d8bfd;
 }
 
 .statusbar {

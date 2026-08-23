@@ -22,6 +22,7 @@ export interface ContextTarget {
     | 'library'
     | 'clip'
     | 'transition'
+    | 'marker'
     | 'track'
     | 'timeline'
     | 'monitor'
@@ -32,6 +33,7 @@ export interface ContextTarget {
   readonly projectId?: string;
   readonly itemId?: string;
   readonly transitionId?: string;
+  readonly markerId?: string;
   readonly trackId?: string;
   readonly drop?: string;
   readonly effectId?: string;

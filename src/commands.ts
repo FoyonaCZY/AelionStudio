@@ -29,6 +29,7 @@ import {
   markerEntity,
   mediaItem,
   newTrackEntity,
+  orderedTracks,
   probeSourceSize,
   readTransform,
   sequenceFormat,
@@ -800,17 +801,68 @@ export function deleteSelection(engine: EditorEngine, itemId: string, ripple: bo
   session.transaction.commands.removeItem({ itemId, label: '删除片段' });
 }
 
-export function addMarker(engine: EditorEngine, timeUs: number, label = '标记'): void {
+export function itemCoveringTime(
+  project: AelionProject,
+  atUs: number,
+  options?: { readonly itemId?: string; readonly trackId?: string; readonly looseItem?: boolean },
+): ItemEntity | undefined {
+  const covers = (item: ItemEntity): boolean =>
+    atUs >= item.range.startUs && atUs <= item.range.startUs + item.range.durationUs;
+  if (options?.itemId !== undefined) {
+    const item = project.items[options.itemId];
+    if (item !== undefined && (covers(item) || options.looseItem === true)) return item;
+  }
+  if (options?.trackId !== undefined) {
+    const track = project.tracks[options.trackId];
+    if (track !== undefined) {
+      for (const id of track.itemIds) {
+        const item = project.items[id];
+        if (item !== undefined && covers(item)) return item;
+      }
+    }
+  }
+  for (const track of orderedTracks(project)) {
+    for (const id of track.itemIds) {
+      const item = project.items[id];
+      if (item !== undefined && covers(item)) return item;
+    }
+  }
+  return undefined;
+}
+
+export function addMarker(
+  engine: EditorEngine,
+  timeUs: number,
+  label = '标记',
+  options?: { readonly itemId?: string },
+): string {
   const session = requireSession(engine);
   const project = requireProject(engine);
+  const item = options?.itemId === undefined ? undefined : project.items[options.itemId];
+  const id = engine.ids.next('marker');
+  const atUs = Math.max(0, Math.round(timeUs));
+  const markerTimeUs =
+    item === undefined
+      ? atUs
+      : Math.max(0, Math.min(item.range.durationUs, atUs - item.range.startUs));
   session.transaction.commands.addMarker({
     marker: markerEntity({
-      id: engine.ids.next('marker'),
-      sequenceId: project.settings.defaultSequenceId,
-      timeUs,
+      id,
+      timeUs: markerTimeUs,
       label,
+      ...(item === undefined
+        ? { sequenceId: project.settings.defaultSequenceId }
+        : { itemId: item.id }),
     }),
     label: '添加标记',
+  });
+  return id;
+}
+
+export function removeMarker(engine: EditorEngine, markerId: string): void {
+  requireSession(engine).transaction.commands.removeMarker({
+    markerId,
+    label: '删除打点',
   });
 }
 
