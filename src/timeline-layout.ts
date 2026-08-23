@@ -399,6 +399,36 @@ function insertionIndex(items: readonly PlannedItem[], targetStartUs: number): n
  * That is the whole difference from the previous behaviour, where each move
  * committed and the timeline rearranged underneath the cursor.
  */
+/**
+ * Shifts linked partners by the same delta as the clip they belong to.
+ *
+ * Every placed clip is considered, not just the dragged one: repacking the
+ * storyline moves its other clips too, and their audio has to travel with them
+ * or the drag quietly pulls the cut out of sync. Partners keep their own lane
+ * and never take part in packing, so an audio track stays freely positioned.
+ */
+function carryLinkedPartners(
+  project: AelionProject,
+  placements: Map<string, { readonly trackId: string; readonly startUs: number }>,
+): void {
+  for (const [id, at] of [...placements]) {
+    const item = project.items[id];
+    const groupId = item?.linkGroupId;
+    if (item === undefined || groupId === undefined) continue;
+    const deltaUs = at.startUs - item.range.startUs;
+    if (deltaUs === 0) continue;
+    for (const memberId of project.linkGroups[groupId]?.itemIds ?? []) {
+      if (memberId === id || placements.has(memberId)) continue;
+      const member = project.items[memberId];
+      if (member === undefined) continue;
+      placements.set(memberId, {
+        trackId: member.trackId,
+        startUs: Math.max(0, member.range.startUs + deltaUs),
+      });
+    }
+  }
+}
+
 export function planMagneticMove(
   project: AelionProject,
   options: {
@@ -406,19 +436,14 @@ export function planMagneticMove(
     readonly movedItemId: string;
     readonly targetTrackId: string;
     readonly targetStartUs: number;
-    /** Linked partners that must keep their offset to the dragged Item. */
-    readonly linkedItemIds?: readonly string[];
+    /** Carry linked partners along with whatever moves. */
+    readonly followLinks?: boolean;
   },
 ): MagneticPlan | undefined {
   const moved = project.items[options.movedItemId];
   const targetTrack = project.tracks[options.targetTrackId];
   if (moved === undefined || targetTrack === undefined || targetTrack.locked) return undefined;
 
-  const linked = (options.linkedItemIds ?? []).filter(id => id !== moved.id);
-  const followers = linked.flatMap(id => {
-    const item = project.items[id];
-    return item === undefined ? [] : [item];
-  });
   const placements = new Map<string, { readonly trackId: string; readonly startUs: number }>();
   const targetStartUs = Math.max(0, Math.round(options.targetStartUs));
   const primaryTrackId = options.primaryTrackId;
@@ -454,15 +479,7 @@ export function planMagneticMove(
     }
   }
 
-  // Followers keep their offset to the clip they are linked to and never take
-  // part in packing: their own lanes stay freely positioned.
-  const deltaUs = movedStartUs - moved.range.startUs;
-  for (const follower of followers) {
-    placements.set(follower.id, {
-      trackId: follower.trackId,
-      startUs: Math.max(0, follower.range.startUs + deltaUs),
-    });
-  }
+  if (options.followLinks === true) carryLinkedPartners(project, placements);
 
   return {
     placements,

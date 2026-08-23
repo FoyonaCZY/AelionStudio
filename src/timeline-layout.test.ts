@@ -20,6 +20,7 @@ interface Spec {
 function project(tracks: Record<string, { kind: string; items: readonly Spec[] }>): AelionProject {
   const items: Record<string, unknown> = {};
   const trackEntities: Record<string, unknown> = {};
+  const linkGroups: Record<string, { id: string; itemIds: string[] }> = {};
   for (const [trackId, track] of Object.entries(tracks)) {
     for (const spec of track.items) {
       items[spec.id] = {
@@ -31,6 +32,10 @@ function project(tracks: Record<string, { kind: string; items: readonly Spec[] }
         materialInstanceIds: [],
         ...(spec.linkGroupId === undefined ? {} : { linkGroupId: spec.linkGroupId }),
       };
+      if (spec.linkGroupId !== undefined) {
+        const group = (linkGroups[spec.linkGroupId] ??= { id: spec.linkGroupId, itemIds: [] });
+        group.itemIds.push(spec.id);
+      }
     }
     trackEntities[trackId] = {
       id: trackId,
@@ -47,6 +52,7 @@ function project(tracks: Record<string, { kind: string; items: readonly Spec[] }
     sequences: { sequence: { id: 'sequence', trackIds: Object.keys(tracks) } },
     tracks: trackEntities,
     items,
+    linkGroups,
   } as unknown as AelionProject;
 }
 
@@ -216,13 +222,52 @@ describe('planMagneticMove with linked audio', () => {
       movedItemId: 'v1',
       targetTrackId: 'V1',
       targetStartUs: 5 * SECOND,
-      linkedItemIds: ['v1', 'a1'],
+      followLinks: true,
     });
     const placed = starts(plan);
     expect(placed.v1).toEqual({ trackId: 'V1', startUs: 3 * SECOND });
     // The partner follows by the same delta and stays on its own lane.
     expect(placed.a1).toEqual({ trackId: 'A1', startUs: 3 * SECOND });
     expect(placed.v2).toEqual({ trackId: 'V1', startUs: 0 });
+  });
+
+  it('carries the audio of clips that only moved because of the repack', () => {
+    // The regression this pins: only the dragged clip used to carry its
+    // partner, so repacking pulled every other pair out of sync.
+    const linked = project({
+      V1: {
+        kind: 'visual',
+        items: [
+          { id: 'v1', startUs: 0, durationUs: 2 * SECOND, linkGroupId: 'g1' },
+          { id: 'v2', startUs: 2 * SECOND, durationUs: 2 * SECOND, linkGroupId: 'g2' },
+          { id: 'v3', startUs: 4 * SECOND, durationUs: 2 * SECOND, linkGroupId: 'g3' },
+        ],
+      },
+      A1: {
+        kind: 'audio',
+        items: [
+          { id: 'a1', startUs: 0, durationUs: 2 * SECOND, linkGroupId: 'g1' },
+          { id: 'a2', startUs: 2 * SECOND, durationUs: 2 * SECOND, linkGroupId: 'g2' },
+          { id: 'a3', startUs: 4 * SECOND, durationUs: 2 * SECOND, linkGroupId: 'g3' },
+        ],
+      },
+    });
+    const plan = planMagneticMove(linked, {
+      primaryTrackId: 'V1',
+      movedItemId: 'v3',
+      targetTrackId: 'V1',
+      targetStartUs: 0,
+      followLinks: true,
+    });
+    const placed = starts(plan);
+    // v3 leads, so v1 and v2 each shift right by its length.
+    expect(placed.v3?.startUs).toBe(0);
+    expect(placed.v1?.startUs).toBe(2 * SECOND);
+    expect(placed.v2?.startUs).toBe(4 * SECOND);
+    // Each partner lands on the same frame as its video, on its own lane.
+    expect(placed.a3).toEqual({ trackId: 'A1', startUs: 0 });
+    expect(placed.a1).toEqual({ trackId: 'A1', startUs: 2 * SECOND });
+    expect(placed.a2).toEqual({ trackId: 'A1', startUs: 4 * SECOND });
   });
 });
 

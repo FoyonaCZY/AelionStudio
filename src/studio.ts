@@ -176,8 +176,12 @@ interface Gesture {
    * biggest reason the old behaviour felt unmoored from the pointer.
    */
   grabOffsetUs?: number;
+  /** Pointer position when the clip was picked up, for the ghost offset. */
+  originClientY?: number;
   /** Resolved on every move, written only on release. */
   plan?: MagneticPlan;
+  /** How far the ghost has been carried, in timeline pixels. */
+  ghostOffsetPx?: { x: number; y: number };
 }
 
 export class Studio {
@@ -425,7 +429,13 @@ export class Studio {
           filmstrips: this.engine.filmstrips,
           ...(dragPlan === undefined || moveGesture === undefined
             ? {}
-            : { drag: { itemId: moveGesture.itemId, plan: dragPlan } }),
+            : {
+                drag: {
+                  itemId: moveGesture.itemId,
+                  plan: dragPlan,
+                  offsetPx: moveGesture.ghostOffsetPx ?? { x: 0, y: 0 },
+                },
+              }),
         });
       } else {
         syncTimelineViewport(this.#els.timeline, this.view, project);
@@ -437,7 +447,11 @@ export class Studio {
           root: this.#els.timeline,
           project,
           view: this.view,
-          drag: { itemId: moveGesture.itemId, plan: dragPlan },
+          drag: {
+            itemId: moveGesture.itemId,
+            plan: dragPlan,
+            offsetPx: moveGesture.ghostOffsetPx ?? { x: 0, y: 0 },
+          },
         });
       }
       this.#queueWaveforms(project);
@@ -1863,7 +1877,12 @@ export class Studio {
       durationUs: item.range.durationUs,
       pointerId: event.pointerId,
       historyGroup: `edit-${itemId}-${event.pointerId.toString()}`,
-      ...(kind === 'move' ? { grabOffsetUs: Math.max(0, timeUs - item.range.startUs) } : {}),
+      ...(kind === 'move'
+        ? {
+            grabOffsetUs: Math.max(0, timeUs - item.range.startUs),
+            originClientY: event.clientY,
+          }
+        : {}),
     };
     if (kind === 'move') this.#beginMove();
     this.#els.timeline.setPointerCapture(event.pointerId);
@@ -1993,18 +2012,22 @@ export class Studio {
     const targetStartUs = this.view.snap
       ? snapItemStart(intended, item, project, this.view)
       : intended;
-    const linkedItemIds =
-      item.linkGroupId !== undefined && this.view.linkedEdit
-        ? (project.linkGroups[item.linkGroupId]?.itemIds ?? [])
-        : [];
     const plan = planMagneticMove(project, {
       primaryTrackId: primaryVisualTrackId(project),
       movedItemId: item.id,
       targetTrackId,
       targetStartUs,
-      linkedItemIds,
+      followLinks: this.view.linkedEdit,
     });
     if (plan !== undefined) gesture.plan = plan;
+    // Measured in content pixels against the committed position, so the ghost
+    // keeps tracking the pointer even while the timeline auto-scrolls.
+    const committedPx = (item.range.startUs / 1_000_000) * this.view.pixelsPerSecond;
+    const pointerPx = (intended / 1_000_000) * this.view.pixelsPerSecond;
+    gesture.ghostOffsetPx = {
+      x: pointerPx - committedPx,
+      y: event.clientY - (gesture.originClientY ?? event.clientY),
+    };
   }
 
   /**

@@ -1740,17 +1740,35 @@ kbd {
  * would stretch labels and filmstrips instead of moving them.
  */
 .timeline .clip {
+  /*
+   * Displaced clips should read as shoved rather than tweened: almost all of the
+   * distance is covered immediately, then the last of it decays. A longer tail
+   * on a decelerating curve is what makes it feel like something with weight was
+   * pushed out of the way, instead of a value being interpolated.
+   */
   transition:
-    transform 140ms cubic-bezier(0.2, 0.7, 0.3, 1),
-    left 140ms cubic-bezier(0.2, 0.7, 0.3, 1);
+    transform 210ms cubic-bezier(0.16, 1, 0.3, 1),
+    left 210ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 /* The clip under the pointer tracks it directly; easing it would feel like lag. */
+/*
+ * The clip under the pointer is lifted out of the timeline: it tracks the cursor
+ * with no easing at all, is not clipped by its lane, and casts a shadow so it
+ * reads as being above the row it will drop into.
+ */
 .timeline .clip.dragging {
   transition: none;
-  z-index: 6;
-  opacity: 0.72;
-  box-shadow: 0 6px 14px #00000066;
+  z-index: 20;
+  opacity: 0.9;
+  box-shadow:
+    0 10px 24px #000000aa,
+    0 0 0 1px #ffffff26;
   cursor: grabbing;
+  pointer-events: none;
+  will-change: transform;
+}
+.timeline .track-lane:has(.clip.dragging) {
+  overflow: visible;
 }
 @media (prefers-reduced-motion: reduce) {
   .timeline .clip {

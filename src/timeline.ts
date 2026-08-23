@@ -28,6 +28,15 @@ const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
 export interface TimelineDragPreview {
   readonly itemId: string;
   readonly plan: MagneticPlan;
+  /**
+   * How far the dragged clip has been carried from where it sits committed.
+   *
+   * Deliberately raw: unsnapped, unclamped, and independent of the lane the plan
+   * would put it on. The clip has been picked up, so it goes where the pointer
+   * goes, including past the ends of a track and between lanes. Where it will
+   * land is what the insert line and the displaced neighbours are for.
+   */
+  readonly offsetPx: { readonly x: number; readonly y: number };
 }
 
 /**
@@ -589,17 +598,11 @@ export function applyTimelineDrag(options: {
     const at = id === undefined ? undefined : planned.get(id);
     if (at === undefined) continue;
     const left = (at.startUs / 1_000_000) * view.pixelsPerSecond;
+    // The class carries `transition: none`; a drag updates nodes in place, so
+    // the last rebuild predates the gesture and cannot have set it.
+    node.classList.toggle('dragging', id === drag.itemId);
     if (id === drag.itemId) {
-      // The dragged clip is placed outright, including onto another lane.
-      if (node.dataset.track !== at.trackId) {
-        const lane = root.querySelector<HTMLElement>(
-          `.track-lane[data-track="${CSS.escape(at.trackId)}"]`,
-        );
-        if (lane !== null) lane.append(node);
-        node.dataset.track = at.trackId;
-      }
-      node.style.transform = '';
-      node.style.left = `${left.toFixed(2)}px`;
+      node.style.transform = `translate(${drag.offsetPx.x.toFixed(2)}px, ${drag.offsetPx.y.toFixed(2)}px)`;
       continue;
     }
     const base = Number(node.dataset.left ?? '0');
