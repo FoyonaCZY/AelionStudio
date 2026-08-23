@@ -213,6 +213,7 @@ export class Studio {
   #homeProjects: readonly ProjectSummary[] = [];
   #routeTail: Promise<void> = Promise.resolve();
   #ignoreTransportKeysUntil = 0;
+  #playheadPolling = false;
 
   public async start(): Promise<void> {
     this.#layout();
@@ -235,6 +236,7 @@ export class Studio {
       if (this.view.error) this.setStatus('就绪');
       if ((this.engine.preview?.snapshot().renderedFrames ?? 0) === 1) this.scheduleRender();
     });
+    this.engine.setPlayerStateHandler(() => this.#syncTransportChrome());
     this.engine.preview?.setQuality(this.view.previewQuality);
     if (location.hash === '' || location.hash === '#') {
       history.replaceState(null, '', HOME_HASH);
@@ -2200,24 +2202,39 @@ export class Studio {
 
   async #togglePlay(): Promise<void> {
     try {
-      const state = await this.engine.togglePlayback(this.view.currentTimeUs);
-      this.#els.play.classList.toggle('is-playing', state === 'playing');
-      if (state === 'playing') {
-        this.view.currentTimeUs =
-          this.engine.session?.player.currentTimeUs ?? this.view.currentTimeUs;
-        this.#pollPlayhead();
-      }
+      await this.engine.togglePlayback(this.view.currentTimeUs);
+      this.#syncTransportChrome();
     } catch (error) {
       this.setStatus(errorMessage(error, '播放失败'), true);
     }
   }
 
-  #pollPlayhead(): void {
+  #syncTransportChrome(): void {
+    const session = this.engine.session;
+    const playing = session?.player.state === 'playing';
+    if (session !== undefined) this.view.currentTimeUs = session.player.currentTimeUs;
+    this.#els.play.classList.toggle('is-playing', playing);
+    if (playing) {
+      this.#ensurePlayheadPolling();
+      return;
+    }
+    this.scheduleRender();
+  }
+
+  #ensurePlayheadPolling(): void {
+    if (this.#playheadPolling) return;
+    if (this.#screen !== 'editor' || this.engine.session?.player.state !== 'playing') return;
+    this.#playheadPolling = true;
     const tick = (): void => {
       const session = this.engine.session;
-      if (session === undefined || session.player.state !== 'playing') {
+      if (
+        this.#screen !== 'editor' ||
+        session === undefined ||
+        session.player.state !== 'playing'
+      ) {
+        this.#playheadPolling = false;
         this.#els.play.classList.remove('is-playing');
-        this.scheduleRender();
+        if (this.#screen === 'editor') this.scheduleRender();
         return;
       }
       this.view.currentTimeUs = session.player.currentTimeUs;
@@ -2543,6 +2560,7 @@ export class Studio {
     this.#setScreen('editor');
     this.#layout();
     this.render();
+    this.#syncTransportChrome();
     await new Promise<void>(resolve => {
       requestAnimationFrame(() => resolve());
     });

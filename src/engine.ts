@@ -172,6 +172,8 @@ export class EditorEngine {
   #onError: ((message: string) => void) | undefined;
   #onPreviewReady: (() => void) | undefined;
   #onPreviewPointer: ((event: PreviewCanvasPointerEvent) => void) | undefined;
+  #onPlayerState: ((state: string) => void) | undefined;
+  #emittedPlayerState: string | undefined;
   #quality: PreviewCanvasQuality = 'adaptive';
   #canvas: HTMLCanvasElement | undefined;
   #previewSuspended = false;
@@ -333,6 +335,10 @@ export class EditorEngine {
 
   public setPreviewReadyHandler(handler: (() => void) | undefined): void {
     this.#onPreviewReady = handler;
+  }
+
+  public setPlayerStateHandler(handler: ((state: string) => void) | undefined): void {
+    this.#onPlayerState = handler;
   }
 
   public get renderDurationUs(): number {
@@ -976,6 +982,13 @@ export class EditorEngine {
         this.#pruneWaveforms();
         this.#pruneFilmstrips();
         onChange();
+      }
+      if (event.type === 'stats-changed') {
+        const state = session.player.state;
+        if (state !== this.#emittedPlayerState) {
+          this.#emittedPlayerState = state;
+          this.#onPlayerState?.(state);
+        }
       }
       if (event.type === 'diagnostic' && event.diagnostic.severity === 'error') {
         if (!event.diagnostic.message.includes('outside the Render IR duration')) {
