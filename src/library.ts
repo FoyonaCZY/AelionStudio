@@ -4,7 +4,7 @@ import type { AelionProject } from '@aelionsdk/project-schema';
 import { formatClock, safeText } from './format.js';
 import { icon } from './icons.js';
 import { libraryPreview } from './library-previews.js';
-import { EFFECT_CATALOG, TRANSITION_CATALOG } from './project.js';
+import { assetHasEmbeddedAudio, EFFECT_CATALOG, TRANSITION_CATALOG } from './project.js';
 import type { LibrarySort, LibraryTab, LibraryView } from './view-state.js';
 
 const RAIL: readonly { id: LibraryTab; label: string; glyph: Parameters<typeof icon>[0] }[] = [
@@ -99,23 +99,25 @@ export function renderLibrary(options: {
             .join('');
   } else if (tab === 'audio') {
     const audio = sortAssets(
-      assets.filter(asset => (asset as JsonObject).kind === 'audio'),
+      assets.filter(asset => assetHasEmbeddedAudio(asset as JsonObject)),
       sort,
     );
     body =
       audio.length === 0
         ? `<p class="empty-copy">导入音频，或从含音视频的文件中自动拆出 A 轨。</p>`
         : audio
-            .map(asset =>
-              tile(
-                `asset:${asset.id}`,
+            .map(asset => {
+              const record = asset as JsonObject;
+              const audioOnly = record.kind === 'audio';
+              return tile(
+                audioOnly ? `asset:${asset.id}` : `audio:${asset.id}`,
                 assetName(asset),
-                durationHint(asset as JsonObject, '音频'),
+                durationHint(record, audioOnly ? '音频' : 'A 轨'),
                 {
                   audio: true,
                 },
-              ),
-            )
+              );
+            })
             .join('');
   } else if (tab === 'text') {
     body = [

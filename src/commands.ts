@@ -16,6 +16,7 @@ import {
   TITLE_DURATION_US,
   TRANSITION_CATALOG,
   adjustmentItem,
+  assetHasEmbeddedAudio,
   captionItem,
   clipLabel,
   generatorItem,
@@ -71,7 +72,8 @@ export type LibraryDropKind =
   | 'adjustment'
   | `effect:${string}`
   | `transition:${string}`
-  | `asset:${string}`;
+  | `asset:${string}`
+  | `audio:${string}`;
 
 function requireSession(engine: EditorEngine): AelionSessionApi {
   if (engine.session === undefined) throw new Error('Session is not ready');
@@ -152,7 +154,7 @@ export function insertExistingAsset(
   assetId: string,
   atUs: number,
   trackId?: string,
-  options?: { readonly lockTrack?: boolean },
+  options?: { readonly lockTrack?: boolean; readonly stream?: 'auto' | 'audio' | 'video' },
 ): string | undefined {
   const session = requireSession(engine);
   const project = requireProject(engine);
@@ -171,14 +173,48 @@ export function insertExistingAsset(
           typeof (probe as JsonObject).durationUs === 'number'
         ? Math.max(1, (probe as JsonObject).durationUs as number)
         : TITLE_DURATION_US;
-  const trackKind: TrackEntity['kind'] = kind === 'audio' ? 'audio' : 'visual';
+  const stream = options?.stream ?? 'auto';
+  const wantAudioOnly = stream === 'audio' || (stream === 'auto' && kind === 'audio');
+  const wantLinkedAudio =
+    !wantAudioOnly && stream !== 'video' && kind === 'video' && assetHasEmbeddedAudio(asset);
   const historyGroup = engine.ids.next('hist');
+  const preferredKind = trackId === undefined ? undefined : project.tracks[trackId]?.kind;
+
+  if (wantAudioOnly) {
+    const slot = takeInsertSlot(engine, {
+      kind: 'audio',
+      startUs: atUs,
+      durationUs,
+      policy: insertPolicyForMedia('audio'),
+      ...(trackId !== undefined && preferredKind === 'audio' ? { preferredTrackId: trackId } : {}),
+      ...(options?.lockTrack === undefined ? {} : { lockTrack: options.lockTrack }),
+      historyGroup,
+    });
+    const id = engine.ids.next('item');
+    session.transaction.commands.insertItem({
+      item: mediaItem({
+        id,
+        trackId: slot.trackId,
+        kind: 'audio',
+        assetId,
+        name,
+        atUs: slot.startUs,
+        durationUs,
+        format,
+      }),
+      label: `放置 ${name}`,
+      historyGroup,
+    });
+    return id;
+  }
+
+  const trackKind: TrackEntity['kind'] = kind === 'audio' ? 'audio' : 'visual';
   const slot = takeInsertSlot(engine, {
     kind: trackKind,
     startUs: atUs,
     durationUs,
     policy: insertPolicyForMedia(typeof kind === 'string' ? kind : 'video'),
-    ...(trackId === undefined ? {} : { preferredTrackId: trackId }),
+    ...(trackId !== undefined && preferredKind === trackKind ? { preferredTrackId: trackId } : {}),
     ...(options?.lockTrack === undefined ? {} : { lockTrack: options.lockTrack }),
     historyGroup,
   });
@@ -189,42 +225,62 @@ export function insertExistingAsset(
       ? {}
       : { sourceWidth: sourceSize.width, sourceHeight: sourceSize.height };
   const item =
-    kind === 'audio'
-      ? mediaItem({
+    kind === 'image'
+      ? imageItem({
           id,
           trackId: slot.trackId,
-          kind: 'audio',
           assetId,
           name,
           atUs: slot.startUs,
           durationUs,
           format,
+          ...sized,
         })
-      : kind === 'image'
-        ? imageItem({
-            id,
-            trackId: slot.trackId,
-            assetId,
-            name,
-            atUs: slot.startUs,
-            durationUs,
-            format,
-            ...sized,
-          })
-        : mediaItem({
-            id,
-            trackId: slot.trackId,
-            kind: 'video',
-            assetId,
-            name,
-            atUs: slot.startUs,
-            durationUs,
-            format,
-            ...sized,
-          });
+      : mediaItem({
+          id,
+          trackId: slot.trackId,
+          kind: kind === 'audio' ? 'audio' : 'video',
+          assetId,
+          name,
+          atUs: slot.startUs,
+          durationUs,
+          format,
+          ...sized,
+        });
   session.transaction.commands.insertItem({
     item,
     label: `放置 ${name}`,
+    historyGroup,
+  });
+  if (!wantLinkedAudio) return id;
+
+  const audioSlot = takeInsertSlot(engine, {
+    kind: 'audio',
+    startUs: slot.startUs,
+    durationUs,
+    policy: 'overlay',
+    historyGroup,
+  });
+  const audioId = engine.ids.next('item');
+  session.transaction.commands.insertItem({
+    item: mediaItem({
+      id: audioId,
+      trackId: audioSlot.trackId,
+      kind: 'audio',
+      assetId,
+      name,
+      atUs: audioSlot.startUs,
+      durationUs,
+      format,
+    }),
+    label: `放置 ${name} 音频`,
+    historyGroup,
+  });
+  session.transaction.commands.linkItems({
+    groupId: engine.ids.next('link'),
+    kind: 'av-sync',
+    itemIds: [id, audioId],
+    label: `联动 ${name}`,
     historyGroup,
   });
   return id;

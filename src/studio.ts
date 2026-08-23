@@ -710,7 +710,7 @@ export class Studio {
       }
       return [
         menuItem('apply-drop', '添加到时间线'),
-        ...(hit.drop.startsWith('asset:')
+        ...(hit.drop.startsWith('asset:') || hit.drop.startsWith('audio:')
           ? [
               menuItem('rename-asset', '重命名'),
               menuSep,
@@ -855,12 +855,18 @@ export class Studio {
       this.#applyDrop(hit.drop, this.view.currentTimeUs, this.view.selectedTrackId, false);
       return;
     }
-    if (id === 'rename-asset' && hit.drop?.startsWith('asset:') === true) {
-      this.#openRenameAsset(hit.drop.slice('asset:'.length));
+    if (
+      id === 'rename-asset' &&
+      (hit.drop?.startsWith('asset:') === true || hit.drop?.startsWith('audio:') === true)
+    ) {
+      this.#openRenameAsset(hit.drop.slice(hit.drop.indexOf(':') + 1));
       return;
     }
-    if (id === 'delete-asset' && hit.drop?.startsWith('asset:') === true) {
-      this.#deleteLibraryAsset(hit.drop.slice('asset:'.length));
+    if (
+      id === 'delete-asset' &&
+      (hit.drop?.startsWith('asset:') === true || hit.drop?.startsWith('audio:') === true)
+    ) {
+      this.#deleteLibraryAsset(hit.drop.slice(hit.drop.indexOf(':') + 1));
       return;
     }
     if (id === 'lib-view') {
@@ -1568,11 +1574,18 @@ export class Studio {
     lockTrack: boolean,
     sourceItemId?: string,
   ): void {
-    if (payload.startsWith('asset:')) {
+    if (payload.startsWith('asset:') || payload.startsWith('audio:')) {
       this.run('放置素材', () => {
-        const id = insertExistingAsset(this.engine, payload.slice(6), atUs, trackId, {
-          lockTrack,
-        });
+        const id = insertExistingAsset(
+          this.engine,
+          payload.slice(payload.indexOf(':') + 1),
+          atUs,
+          trackId,
+          {
+            lockTrack,
+            ...(payload.startsWith('audio:') ? { stream: 'audio' as const } : {}),
+          },
+        );
         if (id !== undefined) this.view.selectedItemId = id;
       });
       return;

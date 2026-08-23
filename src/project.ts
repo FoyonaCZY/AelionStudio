@@ -166,6 +166,15 @@ export function visualFitScale(
     : { x: sourceAspect / destAspect, y: 1 };
 }
 
+export function assetHasEmbeddedAudio(asset: JsonObject): boolean {
+  if (asset.kind === 'audio') return true;
+  const probe = asset.probeHint;
+  if (probe === null || probe === undefined || typeof probe !== 'object' || Array.isArray(probe)) {
+    return false;
+  }
+  return typeof (probe as JsonObject).audioCodec === 'string';
+}
+
 export function probeSourceSize(
   probe: unknown,
 ): { readonly width: number; readonly height: number } | undefined {
