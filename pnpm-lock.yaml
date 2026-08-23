@@ -9,21 +9,21 @@ importers:
   .:
     dependencies:
       '@aelionsdk/core':
-        specifier: ^1.2.0-rc.5
-        version: 1.2.0-rc.5
+        specifier: ^1.2.0
+        version: 1.2.0
       '@aelionsdk/export':
-        specifier: ^1.2.0-rc.5
-        version: 1.2.0-rc.5
+        specifier: ^1.2.0
+        version: 1.2.0
       '@aelionsdk/project-schema':
-        specifier: ^1.2.0-rc.5
-        version: 1.2.0-rc.5
+        specifier: ^1.2.0
+        version: 1.2.0
       '@aelionsdk/sdk':
-        specifier: ^1.2.0-rc.5
-        version: 1.2.0-rc.5
+        specifier: ^1.2.0
+        version: 1.2.0
     devDependencies:
       '@aelionsdk/vite-plugin':
-        specifier: ^1.2.0-rc.5
-        version: 1.2.0-rc.5(vite@7.3.6)
+        specifier: ^1.2.0
+        version: 1.2.0(vite@7.3.6)
       typescript:
         specifier: 5.8.3
         version: 5.8.3
@@ -33,53 +33,53 @@ importers:
 
 packages:
 
-  '@aelionsdk/audio@1.2.0-rc.5':
-    resolution: {integrity: sha512-oh81KDtR/csLb3a5fXbPqlnZ6mcMJcR4YIn1TDPT6qqM6CV8iUFkShe78DS1bWZ9ECbZ+nTsNUhHKHV96pYOMQ==}
+  '@aelionsdk/audio@1.2.0':
+    resolution: {integrity: sha512-z95/TIGbzirbUs5sxHCIvPKhU9qvaOmikApB/wF9o9Ys/wy2WMLLbDAftgWBiULvlvEtOs3ZoaTlWB8KxfQ3dQ==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/capability@1.2.0-rc.5':
-    resolution: {integrity: sha512-YAcbRE7k39MvChpmrjp+ksQU9eijOPnPnvALiXnZlFioPmjNbxZQqqrSHdrjDUoi0F5LFezLKhjwG5q0LTQEIA==}
+  '@aelionsdk/capability@1.2.0':
+    resolution: {integrity: sha512-G78Ai78ke1AFOfj4glIXUMTH9QCQetB8lBQVZYbLysKoMibbZpBvN5dmHhtz+ZjV3FFoQYE1KJoLCn2pOg2KiQ==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/core@1.2.0-rc.5':
-    resolution: {integrity: sha512-lx5SWiM5yXhNgliGJtTkyiLrBKShrnadmX3DzIJDSD2tGpRQvfPih6ttKFnRPEQhmt7I2qfi4MFaN5SqGI3gwQ==}
+  '@aelionsdk/core@1.2.0':
+    resolution: {integrity: sha512-bGvVldP0iwyPxKyIjq1IA6DjACIqdeDjx4JXeKO3lsQ7m9EuvjaSOW60S+jSMd3VCCi3JU49uXwLIcUMr+Awhg==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/export@1.2.0-rc.5':
-    resolution: {integrity: sha512-kD5I0SzJHrsgtJm/ejaxSfNalhZkmEYFZwiAvI2I87B1M1FllsJvVQCrl5oi3Km+HCkZmnyVpOYcBEVHptyGOw==}
+  '@aelionsdk/export@1.2.0':
+    resolution: {integrity: sha512-M0IVQ+Pz1WrxcRf5SAEs5WR2hsmYzwW+lxYbPITboJ1bSDZvuez0zc7qvjIcaqO+O7GaCpkPGm13+11wIsB8Ug==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/material-compiler@1.2.0-rc.5':
-    resolution: {integrity: sha512-E+eC2NFRDrD40AR/90tAdUHIakwglimjQhwRRd9jthzY5olLWbBRTdLggD7NFss6VYwyVhCJX+xSRtOmbbs3nA==}
+  '@aelionsdk/material-compiler@1.2.0':
+    resolution: {integrity: sha512-mOzIcBk1R4MCrV19CNqySNWd3cmmlG+Bn0zwbVrlCPTzurrCkgUzURn2j6VFavRIxXYAnDNqu9LWIK3gG1VtLw==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/media@1.2.0-rc.5':
-    resolution: {integrity: sha512-j3fWSkcREVYPIyizvF5LJslVZCDfv4zMR5LhZCiu5YM5fYtPT07LvKYh09DKM9g74Sm4MA7/cMcaOJRGO3z+0A==}
+  '@aelionsdk/media@1.2.0':
+    resolution: {integrity: sha512-w6+vwYkkBokpug59fisSNFfZmCQI66r3+L5pveEk6oq4gZTn9T0qYtbhGrCbbIU8G60CUCPOBrEOjlh5EvGz+A==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/project-schema@1.2.0-rc.5':
-    resolution: {integrity: sha512-6KDOZRvGl18TNLPJX1fKTZ0sH6twBVneXiZ5kEeJE7ip3lEbmxcyvlE2XS3g2ut2u1RdX8ChNrZvT6NodRnjWw==}
+  '@aelionsdk/project-schema@1.2.0':
+    resolution: {integrity: sha512-BQvbVvLSHzSiQufR2jFLLXozfen/ForVPJ5NAfNkuqd+NmqJRK9CMloEeU4jHlPZvvEWzhJCEufcIANIhQbpzg==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/render-ir@1.2.0-rc.5':
-    resolution: {integrity: sha512-0DijoOS0BtVFIOldT0RpawT5v7VKWem4Fqa/nVF/159emQ+uHZt48vAND0/mvbc+ojWBohPsQgFUYj2oFQg/bw==}
+  '@aelionsdk/render-ir@1.2.0':
+    resolution: {integrity: sha512-kANOuv2tlle6m5H0d3R0QefKOnQ/NedI+Fv0waoMgLzs2rr6xoF+KUsjiWaObAn9KC/S84k8IPnhaNpbdUHLEw==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/renderer-worker@1.2.0-rc.5':
-    resolution: {integrity: sha512-JRHO+ELO+Q9DAzI87K5x782sfrhZon1pHL7YnLat2dP/oeMA9m8y3+fzzTNvoM5wYXh+cQaqJFCeMeN0jvRIKQ==}
+  '@aelionsdk/renderer-worker@1.2.0':
+    resolution: {integrity: sha512-8Wa7GLRUpZbdsfuhynfli+PHZI8vj/DYUk7wVxl8aW7LAKRJ7mygZ2jO0XNorW1I51GO2SFiFwErPM8b8kckxw==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/sdk@1.2.0-rc.5':
-    resolution: {integrity: sha512-N6krMsJuvGjbGq8qFrgflbWmySyIChcuMfwuZb5ttajStyjEbywgGHFdG6DmPaJBfqKn63bDwx66nRsmdZGBGg==}
+  '@aelionsdk/sdk@1.2.0':
+    resolution: {integrity: sha512-9z8kLXTVnqpTMfoSGtWnMul4oFoPMjBKT0DfvegnUxaXNIUiPAghLFuBEePCUg+16Jk8RZsb3HiFsJXbcsvmvw==}
     engines: {node: '>=24 <25'}
     hasBin: true
 
-  '@aelionsdk/transaction@1.2.0-rc.5':
-    resolution: {integrity: sha512-zCkz0DMYwytu2WRCT7CCVvRhvz/+Q2kfnrXd+K39SBNdfFmIyzEiAi4LYH0ESc1bWl986cPM1gUwduk+1935xQ==}
+  '@aelionsdk/transaction@1.2.0':
+    resolution: {integrity: sha512-L+2lbyrMFnhU7CoEU/XkBOXex/M+R8QsUrqscPBrMneNlwFYWe2EXOtBascbRjgZ18lU2rXzM8qj/7On+U2FXQ==}
     engines: {node: '>=24 <25'}
 
-  '@aelionsdk/vite-plugin@1.2.0-rc.5':
-    resolution: {integrity: sha512-TAS8aF995e0OdOMNXMGwCFow3STk4sKMnlQ6Z0DcZ4mL3i5rYtEAG7n+UA8A8I4KQyCm9dinjy8ooob/cofH9g==}
+  '@aelionsdk/vite-plugin@1.2.0':
+    resolution: {integrity: sha512-cQRcm2Hat8iT/oZwDGGZqomxxWSYFF60w+dj0dyIya5d/yxGiDAUu3b5/DlXcrnWuX1SbqiGund6Efy910gmAQ==}
     engines: {node: '>=24 <25'}
     peerDependencies:
       vite: ^7.3.6
@@ -516,74 +516,74 @@ packages:
 
 snapshots:
 
-  '@aelionsdk/audio@1.2.0-rc.5':
+  '@aelionsdk/audio@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
-      '@aelionsdk/render-ir': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
+      '@aelionsdk/render-ir': 1.2.0
 
-  '@aelionsdk/capability@1.2.0-rc.5':
+  '@aelionsdk/capability@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
 
-  '@aelionsdk/core@1.2.0-rc.5': {}
+  '@aelionsdk/core@1.2.0': {}
 
-  '@aelionsdk/export@1.2.0-rc.5':
+  '@aelionsdk/export@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
-      '@aelionsdk/media': 1.2.0-rc.5
-      '@aelionsdk/render-ir': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
+      '@aelionsdk/media': 1.2.0
+      '@aelionsdk/render-ir': 1.2.0
       mediabunny: 1.50.8
 
-  '@aelionsdk/material-compiler@1.2.0-rc.5':
+  '@aelionsdk/material-compiler@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
 
-  '@aelionsdk/media@1.2.0-rc.5':
+  '@aelionsdk/media@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
       mediabunny: 1.50.8
 
-  '@aelionsdk/project-schema@1.2.0-rc.5':
+  '@aelionsdk/project-schema@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
       ajv: 8.18.0
       ajv-formats: 3.0.1(ajv@8.18.0)
 
-  '@aelionsdk/render-ir@1.2.0-rc.5':
+  '@aelionsdk/render-ir@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
-      '@aelionsdk/material-compiler': 1.2.0-rc.5
-      '@aelionsdk/project-schema': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
+      '@aelionsdk/material-compiler': 1.2.0
+      '@aelionsdk/project-schema': 1.2.0
 
-  '@aelionsdk/renderer-worker@1.2.0-rc.5':
+  '@aelionsdk/renderer-worker@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
-      '@aelionsdk/material-compiler': 1.2.0-rc.5
-      '@aelionsdk/render-ir': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
+      '@aelionsdk/material-compiler': 1.2.0
+      '@aelionsdk/render-ir': 1.2.0
 
-  '@aelionsdk/sdk@1.2.0-rc.5':
+  '@aelionsdk/sdk@1.2.0':
     dependencies:
-      '@aelionsdk/audio': 1.2.0-rc.5
-      '@aelionsdk/capability': 1.2.0-rc.5
-      '@aelionsdk/core': 1.2.0-rc.5
-      '@aelionsdk/export': 1.2.0-rc.5
-      '@aelionsdk/material-compiler': 1.2.0-rc.5
-      '@aelionsdk/media': 1.2.0-rc.5
-      '@aelionsdk/project-schema': 1.2.0-rc.5
-      '@aelionsdk/render-ir': 1.2.0-rc.5
-      '@aelionsdk/renderer-worker': 1.2.0-rc.5
-      '@aelionsdk/transaction': 1.2.0-rc.5
+      '@aelionsdk/audio': 1.2.0
+      '@aelionsdk/capability': 1.2.0
+      '@aelionsdk/core': 1.2.0
+      '@aelionsdk/export': 1.2.0
+      '@aelionsdk/material-compiler': 1.2.0
+      '@aelionsdk/media': 1.2.0
+      '@aelionsdk/project-schema': 1.2.0
+      '@aelionsdk/render-ir': 1.2.0
+      '@aelionsdk/renderer-worker': 1.2.0
+      '@aelionsdk/transaction': 1.2.0
 
-  '@aelionsdk/transaction@1.2.0-rc.5':
+  '@aelionsdk/transaction@1.2.0':
     dependencies:
-      '@aelionsdk/core': 1.2.0-rc.5
-      '@aelionsdk/project-schema': 1.2.0-rc.5
+      '@aelionsdk/core': 1.2.0
+      '@aelionsdk/project-schema': 1.2.0
 
-  '@aelionsdk/vite-plugin@1.2.0-rc.5(vite@7.3.6)':
+  '@aelionsdk/vite-plugin@1.2.0(vite@7.3.6)':
     dependencies:
-      '@aelionsdk/audio': 1.2.0-rc.5
-      '@aelionsdk/export': 1.2.0-rc.5
-      '@aelionsdk/renderer-worker': 1.2.0-rc.5
+      '@aelionsdk/audio': 1.2.0
+      '@aelionsdk/export': 1.2.0
+      '@aelionsdk/renderer-worker': 1.2.0
       vite: 7.3.6
 
   '@esbuild/aix-ppc64@0.28.2':

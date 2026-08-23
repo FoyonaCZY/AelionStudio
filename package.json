@@ -35,13 +35,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aelionsdk/core": "^1.2.0-rc.5",
-    "@aelionsdk/export": "^1.2.0-rc.5",
-    "@aelionsdk/project-schema": "^1.2.0-rc.5",
-    "@aelionsdk/sdk": "^1.2.0-rc.5"
+    "@aelionsdk/core": "^1.2.0",
+    "@aelionsdk/export": "^1.2.0",
+    "@aelionsdk/project-schema": "^1.2.0",
+    "@aelionsdk/sdk": "^1.2.0"
   },
   "devDependencies": {
-    "@aelionsdk/vite-plugin": "^1.2.0-rc.5",
+    "@aelionsdk/vite-plugin": "^1.2.0",
     "typescript": "5.8.3",
     "vite": "7.3.6"
   }
