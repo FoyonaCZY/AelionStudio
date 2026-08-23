@@ -65,6 +65,27 @@ function assetKindFromProbe(
   return mimeType.startsWith('audio/') ? 'audio' : 'video';
 }
 
+/**
+ * Display size of a video track, with container rotation applied.
+ *
+ * `codedWidth`/`codedHeight` describe the stored frame, so a quarter-turned
+ * phone clip reports landscape for portrait footage. Thumbnail capture used to
+ * correct this by reading `displayWidth` off a decoded frame, but since SDK
+ * 1.2.0-rc.5 a preview request carrying `maxDimension` is downscaled at the
+ * provider boundary, so that frame no longer reports the source's real size.
+ * Rotation metadata gives the same answer without decoding anything.
+ */
+function videoDisplaySize(track: {
+  readonly codedWidth: number;
+  readonly codedHeight: number;
+  readonly rotation: number;
+}): { readonly width: number; readonly height: number } {
+  const quarterTurned = Math.abs(Math.round(track.rotation / 90)) % 2 === 1;
+  return quarterTurned
+    ? { width: track.codedHeight, height: track.codedWidth }
+    : { width: track.codedWidth, height: track.codedHeight };
+}
+
 function locatorFor(assetId: string, opfsPath: string | undefined, url?: string): JsonObject {
   if (opfsPath !== undefined) return { type: 'opfs', path: opfsPath };
   if (url !== undefined) return { type: 'url', uri: url };
@@ -475,7 +496,7 @@ export class EditorEngine {
             durationUs: probe.index.durationUs,
             ...(video === undefined
               ? {}
-              : { width: video.codedWidth, height: video.codedHeight, videoCodec: video.codec }),
+              : { ...videoDisplaySize(video), videoCodec: video.codec }),
             ...(audio === undefined ? {} : { audioCodec: audio.codec }),
           },
           metadata: {
@@ -669,7 +690,7 @@ export class EditorEngine {
           locator: { type: 'url', uri: url },
           probeHint: {
             durationUs: probe.index.durationUs,
-            ...(video === undefined ? {} : { width: video.codedWidth, height: video.codedHeight }),
+            ...(video === undefined ? {} : videoDisplaySize(video)),
           },
           metadata: { url },
         });
@@ -1033,24 +1054,20 @@ export class EditorEngine {
         maxDimension: 160,
         transient: true,
       });
+      // The provider capped this frame at `maxDimension` already, so draw it at
+      // the size it arrived: halving it again would leave an 80px-wide tile.
+      // The frame is also no longer a witness to the source's real dimensions,
+      // which now come from rotation-corrected probe metadata at import.
       const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(frame.displayWidth / 2));
-      canvas.height = Math.max(1, Math.round(frame.displayHeight / 2));
+      canvas.width = Math.max(1, frame.displayWidth);
+      canvas.height = Math.max(1, frame.displayHeight);
       const context = canvas.getContext('2d');
       if (context === null) {
         frame.close();
         return;
       }
-      const sourceWidth = frame.displayWidth;
-      const sourceHeight = frame.displayHeight;
       context.drawImage(frame, 0, 0, canvas.width, canvas.height);
       frame.close();
-      const asset = this.project?.assets[assetId] as JsonObject | undefined;
-      const probe = asset?.probeHint;
-      if (probe !== null && typeof probe === 'object' && !Array.isArray(probe)) {
-        (probe as JsonObject).width = sourceWidth;
-        (probe as JsonObject).height = sourceHeight;
-      }
       const blob = await new Promise<Blob | null>(resolve =>
         canvas.toBlob(resolve, 'image/jpeg', 0.72),
       );
