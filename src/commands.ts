@@ -50,6 +50,7 @@ import {
 } from './text-metrics.js';
 import {
   insertPolicyForMedia,
+  isRangeFreeOnTrack,
   magnetStartOnTrack,
   newTrackAnchorId,
   overlappingItemOnTrack,
@@ -133,6 +134,104 @@ export function addTrack(
   return track.id;
 }
 
+export function canRemoveTrack(engine: EditorEngine, trackId: string): boolean {
+  const project = engine.project;
+  if (project === null) return false;
+  const track = project.tracks[trackId];
+  if (track === undefined || track.locked) return false;
+  return Object.values(project.tracks).filter(entry => entry.kind === track.kind).length > 1;
+}
+
+export function removeTrack(engine: EditorEngine, trackId: string): void {
+  const session = requireSession(engine);
+  const project = requireProject(engine);
+  const track = project.tracks[trackId];
+  if (track === undefined) return;
+  if (track.locked) throw new Error('先解锁轨道再删除');
+  const sameKind = Object.values(project.tracks).filter(entry => entry.kind === track.kind);
+  if (sameKind.length <= 1) throw new Error('至少保留一条该类型轨道');
+  const sequence = project.sequences[track.sequenceId];
+  if (sequence === undefined) throw new Error('Sequence is missing');
+  for (const itemId of [...track.itemIds]) {
+    const live = requireProject(engine);
+    const item = live.items[itemId];
+    if (item === undefined) continue;
+    if (item.linkGroupId !== undefined) {
+      session.transaction.commands.unlinkItems({
+        groupId: item.linkGroupId,
+        itemIds: [itemId],
+      });
+    }
+    const current = requireProject(engine).items[itemId];
+    if (current === undefined) continue;
+    session.transaction.commands.removeItem({ itemId, label: '删除片段' });
+  }
+  const afterItems = requireProject(engine);
+  const leftoverTransitions = Object.values(afterItems.transitions).filter(
+    transition => transition.trackId === trackId,
+  );
+  session.transaction.edit(
+    tx => {
+      for (const transition of leftoverTransitions) {
+        tx.listRemove('sequences', transition.sequenceId, ['transitionIds'], transition.id);
+        tx.deleteEntity('transitions', transition.id);
+        tx.deleteEntity('materialInstances', transition.materialInstanceId);
+      }
+      tx.listRemove('sequences', sequence.id, ['trackIds'], trackId);
+      tx.deleteEntity('tracks', trackId);
+    },
+    { label: '删除轨道' },
+  );
+}
+
+export function realignLinkGroup(
+  engine: EditorEngine,
+  groupId: string,
+  anchorId: string,
+): void {
+  const project = requireProject(engine);
+  const group = project.linkGroups[groupId];
+  const anchor = project.items[anchorId];
+  if (group === undefined || anchor === undefined) return;
+  const anchorOffset = group.syncOffsetsUs?.[anchorId] ?? 0;
+  const writes = new Map<string, { readonly trackId: string; readonly startUs: number }>();
+  for (const id of group.itemIds) {
+    const item = project.items[id];
+    if (item === undefined || item.id === anchor.id) continue;
+    const offset = group.syncOffsetsUs?.[id] ?? 0;
+    const startUs = Math.max(0, anchor.range.startUs + (offset - anchorOffset));
+    if (item.range.startUs !== startUs) {
+      writes.set(item.id, { trackId: item.trackId, startUs });
+    }
+  }
+  if (writes.size === 0) return;
+  applyItemRelocations(engine, writes, '对齐联动');
+}
+
+export function moveLinkedMemberToTrack(
+  engine: EditorEngine,
+  itemId: string,
+  toTrackId: string,
+  historyGroup?: string,
+): boolean {
+  const project = requireProject(engine);
+  const item = project.items[itemId];
+  const dest = project.tracks[toTrackId];
+  if (item === undefined || dest === undefined || dest.locked) return false;
+  if (item.trackId === toTrackId || dest.kind !== itemTrackKind(item)) return false;
+  if (
+    !isRangeFreeOnTrack(project, toTrackId, item.range.startUs, item.range.durationUs, [item.id])
+  ) {
+    return false;
+  }
+  return applyItemRelocations(
+    engine,
+    new Map([[item.id, { trackId: toTrackId, startUs: item.range.startUs }]]),
+    '联动换轨',
+    historyGroup,
+  );
+}
+
 function takeInsertSlot(
   engine: EditorEngine,
   options: ResolveInsertOptions & { readonly historyGroup?: string },
@@ -185,7 +284,7 @@ export function insertExistingAsset(
       kind: 'audio',
       startUs: atUs,
       durationUs,
-      policy: insertPolicyForMedia('audio'),
+      policy: options?.lockTrack === true ? 'overlay' : insertPolicyForMedia('audio'),
       ...(trackId !== undefined && preferredKind === 'audio' ? { preferredTrackId: trackId } : {}),
       ...(options?.lockTrack === undefined ? {} : { lockTrack: options.lockTrack }),
       historyGroup,
@@ -213,7 +312,10 @@ export function insertExistingAsset(
     kind: trackKind,
     startUs: atUs,
     durationUs,
-    policy: insertPolicyForMedia(typeof kind === 'string' ? kind : 'video'),
+    policy:
+      options?.lockTrack === true
+        ? 'overlay'
+        : insertPolicyForMedia(typeof kind === 'string' ? kind : 'video'),
     ...(trackId !== undefined && preferredKind === trackKind ? { preferredTrackId: trackId } : {}),
     ...(options?.lockTrack === undefined ? {} : { lockTrack: options.lockTrack }),
     historyGroup,

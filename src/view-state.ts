@@ -23,6 +23,7 @@ export interface ViewState {
   pixelsPerSecond: number;
   scrollLeftPx: number;
   snap: boolean;
+  programSnap: boolean;
   linkedEdit: boolean;
   ripple: boolean;
   libraryTab: LibraryTab;
@@ -52,6 +53,7 @@ export function createViewState(): ViewState {
     pixelsPerSecond: 90,
     scrollLeftPx: 0,
     snap: true,
+    programSnap: true,
     linkedEdit: true,
     ripple: false,
     libraryTab: 'media',
@@ -62,7 +64,7 @@ export function createViewState(): ViewState {
     showSafeArea: false,
     leftWidth: 312,
     rightWidth: 280,
-    timelineHeight: 268,
+    timelineHeight: 300,
     status: '空时间线 · 导入素材或添加标题开始剪辑',
     error: false,
     busy: undefined,
@@ -90,3 +92,5 @@ export const TRACK_HEADER_WIDTH = 108;
 export const RULER_HEIGHT = 22;
 export const SNAP_PIXELS = 8;
 export const MIN_TIMELINE_US = 10_000_000;
+export const MIN_PPS = 18;
+export const MAX_PPS = 720;

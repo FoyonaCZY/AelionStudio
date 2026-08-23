@@ -13,6 +13,7 @@ import {
   addTrack,
   applyEffect,
   applyTransition,
+  canRemoveTrack,
   deleteSelection,
   itemAtTime,
   removeEffect,
@@ -25,7 +26,9 @@ import {
   itemsUsingAsset,
   renameAsset,
   deleteAsset,
+  realignLinkGroup,
   removeMarker,
+  removeTrack,
   neighborPair,
   removeTransition,
   resizeTransition,
@@ -34,6 +37,7 @@ import {
   patchVisual,
   moveItemAvoidingOverlap,
   moveLinkedGroupAvoidingOverlap,
+  moveLinkedMemberToTrack,
   resizeTimelineItem,
   setItemEnabled,
   setShapeFill,
@@ -44,7 +48,7 @@ import {
   type LibraryDropKind,
 } from './commands.js';
 import { downloadBlob, downloadText, on, requiredElement } from './dom.js';
-import { EditorEngine } from './engine.js';
+import { EditorEngine, type ImportPlacementOptions } from './engine.js';
 import { errorMessage, isIdleEditError } from './errors.js';
 import { clampTime, formatTimecode, frameDurationUs, quantizeToFrame } from './format.js';
 import { renderInspector } from './inspector.js';
@@ -54,6 +58,7 @@ import {
   itemMediaRef,
   itemSource,
   itemVisual,
+  linkedMixerItem,
   mediaSourceSize,
   readFittedTransform,
   readTransform,
@@ -86,14 +91,16 @@ import {
 import { parseSubtitleDocument } from './subtitle.js';
 import { fontPresetFamilies, readItemTextStyle } from './text-metrics.js';
 import {
+  clampTimelineScroll,
   hitTimeFromEvent,
   isTimelineScrollbarHit,
   renderTimeline,
+  snapItemStart,
+  snapPlayheadTime,
   snapTime,
   syncTimelineViewport,
   timelineDurationUs,
   TRACK_HEADER_WIDTH,
-  xToUs,
 } from './timeline.js';
 import {
   allowsNativeContextMenu,
@@ -109,6 +116,8 @@ import { createHomeState, editorHash, HOME_HASH, parseStudioRoute, renderHome } 
 import { listProjectSummaries, type ProjectSummary } from './project-store.js';
 import {
   createViewState,
+  MAX_PPS,
+  MIN_PPS,
   resetViewState,
   type EditTool,
   type InspectorTab,
@@ -220,6 +229,7 @@ export class Studio {
   #ignoreTransportKeysUntil = 0;
   #playheadPolling = false;
   #revealedItemId: string | undefined;
+  #importTarget: ImportPlacementOptions & { readonly atUs?: number } | undefined;
 
   public async start(): Promise<void> {
     this.#layout();
@@ -337,7 +347,9 @@ export class Studio {
       button.classList.toggle('on', on);
       button.setAttribute('aria-pressed', on ? 'true' : 'false');
     });
+    clampTimelineScroll(this.view, project, this.#els.timeline);
     this.#setPressed('tl-snap', this.view.snap);
+    this.#setPressed('program-snap', this.view.programSnap);
     this.#setPressed('tl-linked', this.view.linkedEdit);
     this.#setPressed('tl-ripple', this.view.ripple);
     this.#setPressed('safe-area', this.view.showSafeArea);
@@ -422,7 +434,12 @@ export class Studio {
   async #seek(timeUs: number): Promise<void> {
     const durationUs = Math.max(1, timelineDurationUs(this.engine.project));
     this.view.currentTimeUs = clampTime(
-      snapTime(timeUs, this.engine.project, this.view),
+      snapPlayheadTime(
+        timeUs,
+        this.engine.project,
+        this.view,
+        this.engine.format.frameRate,
+      ),
       durationUs,
     );
     this.#els.timecode.textContent = formatTimecode(
@@ -480,7 +497,11 @@ export class Studio {
       const files = [...(this.#els.fileMedia.files ?? [])];
       this.#els.fileMedia.value = '';
       this.#ignoreTransportKeysUntil = performance.now() + 800;
-      if (files.length > 0) this.#importFiles(files);
+      const target = this.#importTarget;
+      this.#importTarget = undefined;
+      if (files.length > 0) {
+        this.#importFiles(files, target?.atUs ?? this.view.currentTimeUs, target);
+      }
     });
     on(this.#els.fileSub, 'change', () => {
       const file = this.#els.fileSub.files?.[0];
@@ -490,7 +511,11 @@ export class Studio {
     on(document, 'contextmenu', event => this.#onContextMenu(event as MouseEvent), {
       capture: true,
     });
-    on(window, 'resize', () => hideContextMenu());
+    on(window, 'resize', () => {
+      hideContextMenu();
+      clampTimelineScroll(this.view, this.engine.project, this.#els.timeline);
+      syncTimelineViewport(this.#els.timeline, this.view, this.engine.project);
+    });
     on(this.#els.home, 'click', event => this.#onHomeClick(event));
     on(this.#els.homeSearch, 'input', () => {
       this.#home.query = this.#els.homeSearch.value;
@@ -778,6 +803,10 @@ export class Studio {
         menuItem('add-v', '添加视频轨'),
         menuItem('add-a', '添加音频轨'),
         menuItem('add-c', '添加字幕轨'),
+        menuItem('remove-track', '删除轨道', {
+          danger: true,
+          disabled: !canRemoveTrack(this.engine, hit.trackId),
+        }),
       ];
     }
     if (hit.kind === 'timeline') {
@@ -802,6 +831,7 @@ export class Studio {
         menuItem('to-end', '到结尾', { shortcut: 'End' }),
         menuSep,
         menuItem('safe-area', '安全框', { checked: this.view.showSafeArea }),
+        menuItem('program-snap', '画面吸附', { checked: this.view.programSnap }),
         menuItem('export', '导出…'),
       ];
     }
@@ -849,6 +879,28 @@ export class Studio {
     }
     if (id === 'delete-project' && hit.projectId !== undefined) {
       void this.#deleteProject(hit.projectId);
+      return;
+    }
+    if (id === 'import') {
+      this.#importTarget =
+        hit.trackId === undefined
+          ? undefined
+          : {
+              preferredTrackId: hit.trackId,
+              lockTrack: true,
+              ...(hit.timeUs === undefined ? {} : { atUs: hit.timeUs }),
+            };
+      this.#els.fileMedia.click();
+      return;
+    }
+    if (id === 'remove-track' && hit.trackId !== undefined) {
+      const track = this.engine.project?.tracks[hit.trackId];
+      const count = track?.itemIds.length ?? 0;
+      if (count > 0 && !window.confirm(`删除轨道及其中的 ${count} 个片段？`)) return;
+      this.run('删除轨道', () => {
+        removeTrack(this.engine, hit.trackId as string);
+        if (this.view.selectedTrackId === hit.trackId) this.view.selectedTrackId = undefined;
+      });
       return;
     }
     if (id === 'apply-drop' && hit.drop !== undefined) {
@@ -941,6 +993,7 @@ export class Studio {
     }
     if (
       id === 'snap' ||
+      id === 'program-snap' ||
       id === 'ripple' ||
       id === 'safe-area' ||
       id === 'zoom-in' ||
@@ -1006,6 +1059,7 @@ export class Studio {
       return;
     }
     if (name === 'import') {
+      this.#importTarget = undefined;
       this.#els.fileMedia.click();
       return;
     }
@@ -1114,8 +1168,22 @@ export class Studio {
       this.scheduleRender();
       return;
     }
+    if (name === 'program-snap') {
+      this.view.programSnap = !this.view.programSnap;
+      this.scheduleRender();
+      return;
+    }
     if (name === 'linked') {
-      this.view.linkedEdit = !this.view.linkedEdit;
+      const enabling = !this.view.linkedEdit;
+      this.view.linkedEdit = enabling;
+      const item =
+        this.view.selectedItemId === undefined
+          ? undefined
+          : this.engine.project?.items[this.view.selectedItemId];
+      if (enabling && item?.linkGroupId !== undefined) {
+        this.run('对齐联动', () => realignLinkGroup(this.engine, item.linkGroupId as string, item.id));
+        return;
+      }
       this.scheduleRender();
       return;
     }
@@ -1460,16 +1528,20 @@ export class Studio {
       ) {
         patchVisual(this.engine, itemId, { blendMode: target.value });
       }
-      if (bind === 'gainDb') patchAudio(this.engine, itemId, { gainDb: numeric }, live);
-      if (bind === 'pan') patchAudio(this.engine, itemId, { pan: numeric }, live);
+      const mixerId =
+        this.engine.project === null || item === undefined
+          ? itemId
+          : (linkedMixerItem(this.engine.project, item)?.id ?? itemId);
+      if (bind === 'gainDb') patchAudio(this.engine, mixerId, { gainDb: numeric }, live);
+      if (bind === 'pan') patchAudio(this.engine, mixerId, { pan: numeric }, live);
       if (bind === 'fadeInMs') {
-        patchAudio(this.engine, itemId, { fadeInUs: Math.round(numeric * 1000) }, live);
+        patchAudio(this.engine, mixerId, { fadeInUs: Math.round(numeric * 1000) }, live);
       }
       if (bind === 'fadeOutMs') {
-        patchAudio(this.engine, itemId, { fadeOutUs: Math.round(numeric * 1000) }, live);
+        patchAudio(this.engine, mixerId, { fadeOutUs: Math.round(numeric * 1000) }, live);
       }
       if (bind === 'pitch' && (target.value === 'varispeed' || target.value === 'preserve')) {
-        patchAudio(this.engine, itemId, { pitchPolicy: target.value });
+        patchAudio(this.engine, mixerId, { pitchPolicy: target.value });
       }
       if (bind === 'rate') {
         const mapping = item === undefined ? undefined : itemSource(item)?.timeMapping;
@@ -1555,7 +1627,11 @@ export class Studio {
       return;
     }
     const files = [...(event.dataTransfer?.files ?? [])];
-    if (files.length > 0) this.#importFiles(files, timeUs);
+    if (files.length > 0) {
+      this.#importFiles(files, timeUs, {
+        ...(trackId === undefined ? {} : { preferredTrackId: trackId, lockTrack: true }),
+      });
+    }
   }
 
   #onLibraryDblClick(event: Event): void {
@@ -1739,14 +1815,6 @@ export class Studio {
       return;
     }
     const edge = target.closest<HTMLElement>('[data-edge]')?.dataset.edge;
-    if (
-      this.view.tool === 'select' &&
-      edge !== 'start' &&
-      edge !== 'end' &&
-      markerNode?.dataset.marker === undefined
-    ) {
-      void this.#seek(item.range.startUs);
-    }
     const kind: Gesture['kind'] =
       edge === 'start' || edge === 'end'
         ? 'trim'
@@ -1775,6 +1843,9 @@ export class Studio {
   #onTimelinePointerMove(event: PointerEvent): void {
     const gesture = this.#gesture;
     if (gesture === undefined || event.pointerId !== gesture.pointerId) return;
+    if (gesture.kind === 'playhead' || gesture.kind === 'move' || gesture.kind === 'trim') {
+      this.#nudgeTimelineScroll(event);
+    }
     const timeUs = hitTimeFromEvent(event, this.#els.timeline, this.view);
     const deltaUs = timeUs - gesture.originUs;
     if (gesture.kind === 'playhead') {
@@ -1816,12 +1887,10 @@ export class Studio {
           overTrack?.dataset.track !== undefined && overKind === itemKind
             ? overTrack.dataset.track
             : undefined;
-        const changingTrack = trackId !== undefined && trackId !== gesture.trackId;
-        const targetStartUs = changingTrack
-          ? Math.max(0, gesture.startUs + deltaUs)
-          : snapTime(gesture.startUs + deltaUs, project, this.view, [this.view.currentTimeUs], {
-              includeItems: false,
-            });
+        const intended = Math.max(0, gesture.startUs + deltaUs);
+        const targetStartUs = this.view.snap
+          ? snapItemStart(intended, item, project, this.view)
+          : intended;
         if (item.linkGroupId !== undefined && this.view.linkedEdit) {
           moveLinkedGroupAvoidingOverlap(
             this.engine,
@@ -1829,9 +1898,11 @@ export class Studio {
             targetStartUs - item.range.startUs,
             gesture.historyGroup,
           );
+          const latest = this.engine.project?.items[item.id];
+          if (latest !== undefined && trackId !== undefined && trackId !== latest.trackId) {
+            moveLinkedMemberToTrack(this.engine, latest.id, trackId, gesture.historyGroup);
+          }
         } else {
-          const beforeTrackId = item.trackId;
-          const beforeStartUs = item.range.startUs;
           const result = moveItemAvoidingOverlap(this.engine, {
             itemId: item.id,
             startUs: targetStartUs,
@@ -1845,13 +1916,8 @@ export class Studio {
           });
           if (result?.kind === 'swap') gesture.swappedOccupantId = result.occupantId;
           const nextItem = this.engine.project?.items[item.id];
-          if (
-            nextItem !== undefined &&
-            (nextItem.trackId !== beforeTrackId || nextItem.range.startUs !== beforeStartUs)
-          ) {
+          if (nextItem !== undefined && nextItem.trackId !== gesture.trackId) {
             gesture.trackId = nextItem.trackId;
-            gesture.startUs = nextItem.range.startUs;
-            gesture.originUs = timeUs;
           }
         }
       } else if (gesture.kind === 'trim' && gesture.edge !== undefined) {
@@ -1908,6 +1974,7 @@ export class Studio {
     const target = event.target;
     if (!(target instanceof HTMLElement) || target.dataset.role !== 'hscroll') return;
     this.view.scrollLeftPx = Math.max(0, target.scrollLeft);
+    clampTimelineScroll(this.view, this.engine.project, this.#els.timeline);
     syncTimelineViewport(this.#els.timeline, this.view, this.engine.project);
   }
 
@@ -2021,16 +2088,33 @@ export class Studio {
 
   #zoom(factor: number, clientX?: number): void {
     const previous = this.view.pixelsPerSecond;
-    this.view.pixelsPerSecond = Math.min(420, Math.max(18, previous * factor));
-    if (clientX !== undefined) {
-      const local = clientX - this.#els.timeline.getBoundingClientRect().left - TRACK_HEADER_WIDTH;
-      const timeUs = xToUs(local, { ...this.view, pixelsPerSecond: previous });
-      this.view.scrollLeftPx = Math.max(
-        0,
-        (timeUs / 1_000_000) * this.view.pixelsPerSecond - local,
-      );
-    }
+    this.view.pixelsPerSecond = Math.min(MAX_PPS, Math.max(MIN_PPS, previous * factor));
+    const local =
+      clientX !== undefined
+        ? clientX - this.#els.timeline.getBoundingClientRect().left - TRACK_HEADER_WIDTH
+        : (this.view.currentTimeUs / 1_000_000) * previous - this.view.scrollLeftPx;
+    const timeUs = ((local + this.view.scrollLeftPx) / previous) * 1_000_000;
+    this.view.scrollLeftPx = Math.max(0, (timeUs / 1_000_000) * this.view.pixelsPerSecond - local);
+    clampTimelineScroll(this.view, this.engine.project, this.#els.timeline);
     this.scheduleRender();
+  }
+
+  #nudgeTimelineScroll(event: PointerEvent): void {
+    const root = this.#els.timeline;
+    const rect = root.getBoundingClientRect();
+    const left = rect.left + TRACK_HEADER_WIDTH;
+    const right = rect.right;
+    const zone = 40;
+    let delta = 0;
+    if (event.clientX < left + zone) {
+      delta = -Math.ceil(((left + zone - event.clientX) / zone) * 18);
+    } else if (event.clientX > right - zone) {
+      delta = Math.ceil(((event.clientX - (right - zone)) / zone) * 18);
+    }
+    if (delta === 0) return;
+    this.view.scrollLeftPx += delta;
+    clampTimelineScroll(this.view, this.engine.project, root);
+    syncTimelineViewport(root, this.view, this.engine.project);
   }
 
   #step(frames: number): void {
@@ -2286,7 +2370,7 @@ export class Studio {
     gesture.pending = {
       point: { x: point.x, y: point.y },
       lockAspect: !event.originalEvent.shiftKey,
-      snapEnabled: this.view.snap && !event.originalEvent.altKey,
+      snapEnabled: this.view.programSnap && !event.originalEvent.altKey,
     };
     this.#scheduleProgramPreview();
   }
@@ -2374,9 +2458,13 @@ export class Studio {
     requestAnimationFrame(tick);
   }
 
-  #importFiles(files: readonly File[], atUs = this.view.currentTimeUs): void {
+  #importFiles(
+    files: readonly File[],
+    atUs = this.view.currentTimeUs,
+    options?: ImportPlacementOptions,
+  ): void {
     this.run(`导入 ${files.length} 个文件`, async () => {
-      const imported = await this.engine.importFiles(files, atUs);
+      const imported = await this.engine.importFiles(files, atUs, options);
       const last = imported.at(-1);
       this.view.selectedItemId = last?.videoItemId ?? last?.audioItemId;
     });
@@ -2397,8 +2485,13 @@ export class Studio {
     if (session === undefined) return;
     this.setStatus('正在分析响度…');
     try {
+      const current = selected(this.engine.project, this.view.selectedItemId);
+      const mixer =
+        this.engine.project === null || current === undefined
+          ? undefined
+          : linkedMixerItem(this.engine.project, current);
       const report = await session.audio.analyze({
-        ...(this.view.selectedItemId === undefined ? {} : { itemIds: [this.view.selectedItemId] }),
+        ...(mixer === undefined ? {} : { itemIds: [mixer.id] }),
       });
       this.view.analysisText = `LUFS ${report.integratedLufs.toFixed(1)} · True Peak ${report.truePeakDbtp.toFixed(1)} dBTP`;
       this.setStatus('响度分析完成');
@@ -2410,7 +2503,12 @@ export class Studio {
 
   async #detectSilence(remove: boolean): Promise<void> {
     const session = this.engine.session;
-    const itemId = this.view.selectedItemId;
+    const current = selected(this.engine.project, this.view.selectedItemId);
+    const mixer =
+      this.engine.project === null || current === undefined
+        ? undefined
+        : linkedMixerItem(this.engine.project, current);
+    const itemId = mixer?.id ?? this.view.selectedItemId;
     if (session === undefined || itemId === undefined) return;
     this.setStatus(remove ? '正在移除静音…' : '正在检测静音…');
     try {

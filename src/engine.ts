@@ -37,6 +37,7 @@ import { newProjectId, STUDIO_DB } from './project-store.js';
 import {
   newTrackAnchorId,
   resolveInsertPlacement,
+  resolveMediaImportPlacement,
   type InsertPlacement,
 } from './timeline-layout.js';
 
@@ -51,6 +52,11 @@ export interface ImportResult {
   readonly durationUs: number;
   readonly videoItemId?: string;
   readonly audioItemId?: string;
+}
+
+export interface ImportPlacementOptions {
+  readonly preferredTrackId?: string;
+  readonly lockTrack?: boolean;
 }
 
 function assetKindFromProbe(
@@ -424,18 +430,26 @@ export class EditorEngine {
     else interactive.commit();
   }
 
-  public async importFiles(files: readonly File[], atUs: number): Promise<readonly ImportResult[]> {
+  public async importFiles(
+    files: readonly File[],
+    atUs: number,
+    options?: ImportPlacementOptions,
+  ): Promise<readonly ImportResult[]> {
     const results: ImportResult[] = [];
     for (const file of files) {
       if (file.name.toLowerCase().endsWith('.srt') || file.name.toLowerCase().endsWith('.vtt')) {
         continue;
       }
-      results.push(await this.importFile(file, atUs));
+      results.push(await this.importFile(file, atUs, options));
     }
     return results;
   }
 
-  public async importFile(file: File, atUs: number): Promise<ImportResult> {
+  public async importFile(
+    file: File,
+    atUs: number,
+    options?: ImportPlacementOptions,
+  ): Promise<ImportResult> {
     const media = this.media;
     const session = this.session;
     if (media === undefined || session === undefined) throw new Error('Session is not ready');
@@ -463,6 +477,10 @@ export class EditorEngine {
         mimeType: imageMime,
         atUs,
         ...(width === undefined || height === undefined ? {} : { width, height }),
+        ...(options?.preferredTrackId === undefined
+          ? {}
+          : { preferredTrackId: options.preferredTrackId }),
+        ...(options?.lockTrack === undefined ? {} : { lockTrack: options.lockTrack }),
       });
     }
     media.registerFile(assetId, mediaFile);
@@ -478,22 +496,12 @@ export class EditorEngine {
     const videoPlace =
       video === undefined
         ? undefined
-        : resolveInsertPlacement(project, {
-            kind: 'visual',
-            startUs: atUs,
-            durationUs,
-            policy: 'sequence',
-          });
+        : resolveMediaImportPlacement(project, 'visual', atUs, durationUs, options);
     const alignedStartUs = videoPlace?.startUs ?? Math.max(0, atUs);
     const audioPlace =
       audio === undefined
         ? undefined
-        : resolveInsertPlacement(project, {
-            kind: 'audio',
-            startUs: alignedStartUs,
-            durationUs,
-            policy: 'overlay',
-          });
+        : resolveMediaImportPlacement(project, 'audio', alignedStartUs, durationUs, options);
     const videoItemId =
       video !== undefined && videoPlace !== undefined ? this.ids.next('item') : undefined;
     const audioItemId =
@@ -597,16 +605,18 @@ export class EditorEngine {
     readonly atUs: number;
     readonly width?: number;
     readonly height?: number;
+    readonly preferredTrackId?: string;
+    readonly lockTrack?: boolean;
   }): ImportResult {
     const { session, mediaFile, assetId, opfsPath, mimeType, atUs } = options;
     const project = session.getSnapshot().project;
     if (project === null) throw new Error('Project is not loaded');
     const durationUs = STILL_DURATION_US;
-    const placement = resolveInsertPlacement(project, {
-      kind: 'visual',
-      startUs: atUs,
-      durationUs,
-      policy: 'sequence',
+    const placement = resolveMediaImportPlacement(project, 'visual', atUs, durationUs, {
+      ...(options.preferredTrackId === undefined
+        ? {}
+        : { preferredTrackId: options.preferredTrackId }),
+      ...(options.lockTrack === undefined ? {} : { lockTrack: options.lockTrack }),
     });
     const videoItemId = this.ids.next('item');
     const format = this.format;

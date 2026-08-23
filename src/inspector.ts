@@ -9,6 +9,7 @@ import {
   effectCatalogEntry,
   instanceMaterialId,
   itemAudio,
+  linkedMixerItem,
   transitionLabel,
   itemSource,
   itemVisual,
@@ -110,7 +111,9 @@ export function renderInspector(options: {
   }
   const format = sequenceFormat(project);
   const visual = itemVisual(item);
-  const audio = itemAudio(item);
+  const mixerItem = linkedMixerItem(project, item);
+  const audio = mixerItem === undefined ? undefined : itemAudio(mixerItem);
+  const linkedAudio = mixerItem !== undefined && mixerItem.id !== item.id;
   const transform = readTransform(item);
   const speed = linearRate(item);
   const tabs: InspectorTab[] = ['clip', 'video', 'audio', 'effect', 'speed'];
@@ -180,6 +183,7 @@ export function renderInspector(options: {
       body = `<p class="empty-copy">当前片段没有音频混合器。</p>`;
     } else {
       body = `
+        ${linkedAudio ? '<p class="empty-copy">正在编辑联动音频。</p>' : ''}
         ${field('增益', slider('gainDb', -24, 12, 0.1, numberField(audio.gainDb, 0)))}
         ${field('声像', slider('pan', -1, 1, 0.01, numberField(audio.pan, 0)))}
         ${field('淡入 ms', slider('fadeInMs', 0, 5000, 10, numberField(audio.fadeInUs, 0) / 1000))}

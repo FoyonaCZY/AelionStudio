@@ -21,7 +21,7 @@
   --adj: #4d4d4d;
   --left: 312px;
   --right: 280px;
-  --timeline: 268px;
+  --timeline: 300px;
   --tl-hscroll: 14px;
   color: var(--text);
   background: var(--bg);
@@ -1304,6 +1304,14 @@ kbd {
 }
 .clip-handle.end {
   right: 0;
+}
+.clip.narrow .clip-handle {
+  width: 3px;
+}
+.clip.tiny .clip-handle {
+  width: 0;
+  pointer-events: none;
+  background: none;
 }
 .clip:hover .clip-handle,
 .clip.selected .clip-handle,

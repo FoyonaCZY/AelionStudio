@@ -14,7 +14,7 @@ import {
   orderedTracks,
   transitionLabel,
 } from './project.js';
-import { formatTimecode, safeText } from './format.js';
+import { formatTimecode, frameDurationUs, safeText } from './format.js';
 import { icon, type IconName } from './icons.js';
 import {
   MIN_TIMELINE_US,
@@ -38,9 +38,9 @@ export interface WaveformPeaks {
 }
 
 export const TRACK_HEIGHT: Record<TrackEntity['kind'], number> = {
-  visual: 54,
-  audio: 40,
-  caption: 28,
+  visual: 68,
+  audio: 52,
+  caption: 32,
 };
 
 export function timelineDurationUs(project: AelionProject | null): number {
@@ -60,6 +60,91 @@ function contentXToUs(x: number, view: ViewState): number {
   return Math.max(0, Math.round((x / view.pixelsPerSecond) * 1_000_000));
 }
 
+function sequenceFrameRate(
+  project: AelionProject | null,
+): { readonly numerator: number; readonly denominator: number } {
+  if (project === null) return { numerator: 30, denominator: 1 };
+  const format = project.sequences[project.settings.defaultSequenceId]?.format.frameRate;
+  if (format === undefined) return { numerator: 30, denominator: 1 };
+  return format;
+}
+
+export function rulerMinorStepUs(
+  pixelsPerSecond: number,
+  frameRate: { readonly numerator: number; readonly denominator: number },
+): number {
+  const frameUs = frameDurationUs(frameRate);
+  const framePx = (frameUs / 1_000_000) * pixelsPerSecond;
+  if (framePx >= 8) return frameUs;
+  if (pixelsPerSecond >= 140) return 500_000;
+  if (pixelsPerSecond >= 60) return 1_000_000;
+  if (pixelsPerSecond >= 24) return 1_000_000;
+  return 5_000_000;
+}
+
+export function rulerMajorStepUs(
+  pixelsPerSecond: number,
+  frameRate: { readonly numerator: number; readonly denominator: number },
+): number {
+  const frameUs = frameDurationUs(frameRate);
+  const framePx = (frameUs / 1_000_000) * pixelsPerSecond;
+  if (framePx >= 8) return 1_000_000;
+  if (pixelsPerSecond >= 140) return 1_000_000;
+  if (pixelsPerSecond >= 60) return 2_000_000;
+  if (pixelsPerSecond >= 24) return 5_000_000;
+  return 10_000_000;
+}
+
+export function quantizeToRuler(
+  timeUs: number,
+  view: ViewState,
+  frameRate: { readonly numerator: number; readonly denominator: number },
+): number {
+  const step = Math.max(1, rulerMinorStepUs(view.pixelsPerSecond, frameRate));
+  return Math.max(0, Math.round(timeUs / step) * step);
+}
+
+export function timelineViewportWidthPx(root: HTMLElement): number {
+  const hscroll = root.querySelector('[data-role="hscroll"]');
+  if (hscroll instanceof HTMLElement && hscroll.clientWidth > 0) return hscroll.clientWidth;
+  const body = root.querySelector('[data-role="body"]');
+  if (body instanceof HTMLElement) return Math.max(0, body.clientWidth);
+  return Math.max(0, root.clientWidth);
+}
+
+export function timelineContentWidthPx(
+  view: ViewState,
+  project: AelionProject | null,
+  viewportPx: number,
+): number {
+  const durationUs = timelineDurationUs(project);
+  const natural = TRACK_HEADER_WIDTH + (durationUs / 1_000_000) * view.pixelsPerSecond;
+  return Math.max(viewportPx, natural, view.scrollLeftPx + viewportPx);
+}
+
+export function clampTimelineScroll(
+  view: ViewState,
+  project: AelionProject | null,
+  root: HTMLElement,
+): number {
+  const viewport = timelineViewportWidthPx(root);
+  const content = timelineContentWidthPx(view, project, viewport);
+  const max = Math.max(0, content - viewport);
+  const next = Math.min(max, Math.max(0, view.scrollLeftPx));
+  view.scrollLeftPx = next;
+  return next;
+}
+
+function nearestTickTimes(
+  timeUs: number,
+  view: ViewState,
+  frameRate: { readonly numerator: number; readonly denominator: number },
+): number[] {
+  const step = Math.max(1, rulerMinorStepUs(view.pixelsPerSecond, frameRate));
+  const nearest = Math.round(timeUs / step) * step;
+  return [nearest, nearest - step, nearest + step];
+}
+
 export function snapTime(
   timeUs: number,
   project: AelionProject | null,
@@ -69,7 +154,8 @@ export function snapTime(
 ): number {
   if (!view.snap || project === null) return Math.max(0, timeUs);
   const thresholdUs = Math.round((SNAP_PIXELS / view.pixelsPerSecond) * 1_000_000);
-  const candidates = [0, view.currentTimeUs, ...extra];
+  const frameRate = sequenceFrameRate(project);
+  const candidates = [0, view.currentTimeUs, ...extra, ...nearestTickTimes(timeUs, view, frameRate)];
   if (options?.includeItems !== false) {
     for (const item of Object.values(project.items)) {
       candidates.push(item.range.startUs, item.range.startUs + item.range.durationUs);
@@ -99,6 +185,53 @@ export function snapTime(
     }
   }
   return Math.max(0, best);
+}
+
+export function snapPlayheadTime(
+  timeUs: number,
+  project: AelionProject | null,
+  view: ViewState,
+  frameRate: { readonly numerator: number; readonly denominator: number },
+): number {
+  if (view.snap && project !== null) return snapTime(timeUs, project, view);
+  return quantizeToRuler(timeUs, view, frameRate);
+}
+
+export function snapItemStart(
+  startUs: number,
+  item: ItemEntity,
+  project: AelionProject,
+  view: ViewState,
+): number {
+  if (!view.snap) return Math.max(0, startUs);
+  const durationUs = item.range.durationUs;
+  const others: number[] = [];
+  const ownMarks: number[] = [];
+  for (const other of Object.values(project.items)) {
+    if (other.id === item.id) continue;
+    others.push(other.range.startUs, other.range.startUs + other.range.durationUs);
+  }
+  for (const marker of Object.values(project.markers)) {
+    if (marker.owner.type === 'sequence') {
+      others.push(marker.timeUs);
+      continue;
+    }
+    const owner = project.items[marker.owner.id];
+    if (owner === undefined) continue;
+    const time = owner.range.startUs + marker.timeUs;
+    if (marker.owner.id === item.id) ownMarks.push(marker.timeUs);
+    else others.push(time);
+  }
+  const startExtras = [...others];
+  for (const mark of ownMarks) {
+    for (const other of others) startExtras.push(other - mark);
+  }
+  const startSnap = snapTime(startUs, project, view, startExtras, { includeItems: false });
+  const endSnap =
+    snapTime(startUs + durationUs, project, view, others, { includeItems: false }) - durationUs;
+  return Math.abs(endSnap - startUs) < Math.abs(startSnap - startUs)
+    ? Math.max(0, endSnap)
+    : startSnap;
 }
 
 function trackKindIcon(kind: TrackEntity['kind']): IconName {
@@ -229,24 +362,28 @@ function rulerHtml(
   durationUs: number,
   view: ViewState,
   frameRate: { numerator: number; denominator: number },
+  widthPx?: number,
 ): string {
-  const width = Math.max(800, (durationUs / 1_000_000) * view.pixelsPerSecond);
+  const width = Math.max(
+    800,
+    widthPx ?? 0,
+    (durationUs / 1_000_000) * view.pixelsPerSecond,
+  );
   const ticks: string[] = [];
-  const major =
-    view.pixelsPerSecond >= 140
-      ? 1
-      : view.pixelsPerSecond >= 60
-        ? 2
-        : view.pixelsPerSecond >= 24
-          ? 5
-          : 10;
-  const minor = major >= 5 ? 1 : 0.5;
-  for (let second = 0; second * 1_000_000 <= durationUs + 1_000_000; second += minor) {
-    const x = second * view.pixelsPerSecond;
-    const isMajor = Math.abs(second % major) < 0.001;
+  const majorUs = rulerMajorStepUs(view.pixelsPerSecond, frameRate);
+  let minorUs = rulerMinorStepUs(view.pixelsPerSecond, frameRate);
+  const maxTicks = 12_000;
+  if (durationUs / minorUs > maxTicks) {
+    minorUs = Math.max(minorUs, Math.ceil(durationUs / maxTicks / minorUs) * minorUs);
+  }
+  const endUs = durationUs + majorUs;
+  for (let timeUs = 0; timeUs <= endUs; timeUs += minorUs) {
+    const x = (timeUs / 1_000_000) * view.pixelsPerSecond;
+    const rem = ((timeUs % majorUs) + majorUs) % majorUs;
+    const isMajor = rem < minorUs / 2 || rem > majorUs - minorUs / 2;
     ticks.push(
       `<span class="tick${isMajor ? ' major' : ''}" style="left:${x.toFixed(1)}px">${
-        isMajor ? formatTimecode(second * 1_000_000, frameRate) : ''
+        isMajor ? formatTimecode(timeUs, frameRate) : ''
       }</span>`,
     );
   }
@@ -267,10 +404,7 @@ export function renderTimeline(options: {
   const thumbs = options.thumbs ?? EMPTY_URLS;
   const filmstrips = options.filmstrips ?? EMPTY_URLS;
   const durationUs = timelineDurationUs(project);
-  const laneWidth = Math.max(
-    root.clientWidth - TRACK_HEADER_WIDTH,
-    (durationUs / 1_000_000) * view.pixelsPerSecond,
-  );
+  const contentWidth = timelineContentWidthPx(view, project, root.clientWidth);
   const frameRate =
     project === null
       ? { numerator: 30, denominator: 1 }
@@ -284,14 +418,13 @@ export function renderTimeline(options: {
       ? []
       : Object.values(project.markers).filter(marker => marker.owner.type === 'sequence');
   const playheadX = usToX(view.currentTimeUs, view) + TRACK_HEADER_WIDTH;
-  const contentWidth = TRACK_HEADER_WIDTH + laneWidth;
 
   root.innerHTML = `
     <div class="tl-main">
     <div class="tl-ruler">
       <div class="tl-corner"></div>
       <div class="tl-ruler-scroll" data-role="ruler">
-        ${rulerHtml(durationUs, view, frameRate)}
+        ${rulerHtml(durationUs, view, frameRate, contentWidth - TRACK_HEADER_WIDTH)}
       </div>
     </div>
     <div class="tl-body" data-role="body">
@@ -324,7 +457,8 @@ export function renderTimeline(options: {
                 )
                 .map(marker => clipMarkerButton(marker, item, track.id, view))
                 .join('');
-              return `${clipMarks}<button type="button" class="${clipClass(item, item.id === view.selectedItemId, film !== undefined)}" data-item="${safeText(item.id)}" data-track="${safeText(track.id)}" style="left:${left.toFixed(2)}px;width:${width.toFixed(2)}px;height:${height - 8}px;${tintStyle}">
+              const sizeClass = width < 16 ? ' tiny' : width < 28 ? ' narrow' : '';
+              return `${clipMarks}<button type="button" class="${clipClass(item, item.id === view.selectedItemId, film !== undefined)}${sizeClass}" data-item="${safeText(item.id)}" data-track="${safeText(track.id)}" style="left:${left.toFixed(2)}px;width:${width.toFixed(2)}px;height:${height - 8}px;${tintStyle}">
                 ${filmHtml}
                 <i class="clip-handle start" data-edge="start"></i>
                 <span class="clip-label">${safeText(clipLabel(item))}</span>
@@ -381,6 +515,7 @@ export function syncTimelineViewport(
   view: ViewState,
   project: AelionProject | null = null,
 ): void {
+  clampTimelineScroll(view, project, root);
   const body = root.querySelector('[data-role="body"]');
   const ruler = root.querySelector('[data-role="ruler"]');
   const hscroll = root.querySelector('[data-role="hscroll"]');

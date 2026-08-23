@@ -292,6 +292,21 @@ export function itemAudio(item: ItemEntity): JsonObject | undefined {
   return audio;
 }
 
+export function linkedMixerItem(
+  project: AelionProject,
+  item: ItemEntity,
+): ItemEntity | undefined {
+  if (itemAudio(item) !== undefined) return item;
+  const group = item.linkGroupId === undefined ? undefined : project.linkGroups[item.linkGroupId];
+  if (group === undefined) return undefined;
+  for (const id of group.itemIds) {
+    if (id === item.id) continue;
+    const other = project.items[id];
+    if (other !== undefined && itemAudio(other) !== undefined) return other;
+  }
+  return undefined;
+}
+
 export function numberField(value: JsonValue | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }

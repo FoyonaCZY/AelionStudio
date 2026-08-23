@@ -170,6 +170,39 @@ export function resolveInsertPlacement(
       : tracks.find(track => track.id === options.preferredTrackId);
   const primary = preferred ?? tracks[0];
 
+  if (options.lockTrack === true && preferred !== undefined) {
+    if (isRangeFreeOnTrack(project, preferred.id, startUs, durationUs, options.exceptItemId)) {
+      return { createTrack: false, trackId: preferred.id, startUs };
+    }
+    if (options.policy === 'sequence') {
+      return {
+        createTrack: false,
+        trackId: preferred.id,
+        startUs: firstFreeStartOnTrack(
+          project,
+          preferred.id,
+          startUs,
+          durationUs,
+          options.exceptItemId,
+        ),
+      };
+    }
+    const magnet = magnetStartOnTrack(
+      project,
+      preferred.id,
+      startUs,
+      durationUs,
+      options.exceptItemId,
+    );
+    return {
+      createTrack: false,
+      trackId: preferred.id,
+      startUs:
+        magnet ??
+        firstFreeStartOnTrack(project, preferred.id, startUs, durationUs, options.exceptItemId),
+    };
+  }
+
   if (options.policy === 'sequence') {
     if (primary === undefined) return { createTrack: true, startUs };
     return {
@@ -185,19 +218,39 @@ export function resolveInsertPlacement(
     };
   }
 
-  const search =
-    options.lockTrack === true && preferred !== undefined
-      ? [preferred]
-      : [
-          ...(preferred === undefined ? [] : [preferred]),
-          ...tracks.filter(track => track !== preferred),
-        ];
+  const search = [
+    ...(preferred === undefined ? [] : [preferred]),
+    ...tracks.filter(track => track !== preferred),
+  ];
   for (const track of search) {
     if (isRangeFreeOnTrack(project, track.id, startUs, durationUs, options.exceptItemId)) {
       return { createTrack: false, trackId: track.id, startUs };
     }
   }
   return { createTrack: true, startUs };
+}
+
+export function resolveMediaImportPlacement(
+  project: AelionProject,
+  kind: TrackEntity['kind'],
+  startUs: number,
+  durationUs: number,
+  options?: { readonly preferredTrackId?: string; readonly lockTrack?: boolean },
+): InsertPlacement {
+  const preferredKind =
+    options?.preferredTrackId === undefined
+      ? undefined
+      : project.tracks[options.preferredTrackId]?.kind;
+  const locked = options?.lockTrack === true && preferredKind === kind;
+  return resolveInsertPlacement(project, {
+    kind,
+    startUs,
+    durationUs,
+    policy: locked || kind !== 'visual' ? 'overlay' : 'sequence',
+    ...(locked && options?.preferredTrackId !== undefined
+      ? { preferredTrackId: options.preferredTrackId, lockTrack: true }
+      : {}),
+  });
 }
 
 /** Nearest gap beside an overlapping clip; `undefined` if there is no adjacent hole. */
