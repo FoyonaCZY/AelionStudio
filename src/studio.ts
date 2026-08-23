@@ -214,6 +214,7 @@ export class Studio {
   #routeTail: Promise<void> = Promise.resolve();
   #ignoreTransportKeysUntil = 0;
   #playheadPolling = false;
+  #revealedItemId: string | undefined;
 
   public async start(): Promise<void> {
     this.#layout();
@@ -397,6 +398,7 @@ export class Studio {
       }
       this.#queueWaveforms(project);
       if (this.#gesture === undefined) this.#queueFilmstrips(project);
+      this.#revealSelectedClip();
     }
     this.#syncProgramOverlay();
   }
@@ -1694,7 +1696,14 @@ export class Studio {
     try {
       if (gesture.kind === 'move') {
         const over = document.elementFromPoint(event.clientX, event.clientY);
-        const trackId = over?.closest<HTMLElement>('.track-row')?.dataset.track;
+        const overTrack = over?.closest<HTMLElement>('.track-row');
+        const overKind = overTrack?.dataset.kind;
+        const itemKind =
+          item.type === 'audio' ? 'audio' : item.type === 'caption' ? 'caption' : 'visual';
+        const trackId =
+          overTrack?.dataset.track !== undefined && overKind === itemKind
+            ? overTrack.dataset.track
+            : undefined;
         const changingTrack = trackId !== undefined && trackId !== gesture.trackId;
         const targetStartUs = changingTrack
           ? Math.max(0, gesture.startUs + deltaUs)
@@ -2574,6 +2583,20 @@ export class Studio {
     this.#timelineKey = '';
     this.#waveformQueued.clear();
     this.#filmstripQueued.clear();
+    this.#revealedItemId = undefined;
+  }
+
+  #revealSelectedClip(): void {
+    const itemId = this.view.selectedItemId;
+    if (itemId === undefined || itemId === this.#revealedItemId) return;
+    const clip = this.#els.timeline.querySelector(`[data-item="${CSS.escape(itemId)}"]`);
+    const body = this.#els.timeline.querySelector('[data-role="body"]');
+    if (!(clip instanceof HTMLElement) || !(body instanceof HTMLElement)) return;
+    const bodyBox = body.getBoundingClientRect();
+    const clipBox = clip.getBoundingClientRect();
+    if (clipBox.bottom > bodyBox.bottom) body.scrollTop += clipBox.bottom - bodyBox.bottom + 8;
+    else if (clipBox.top < bodyBox.top) body.scrollTop -= bodyBox.top - clipBox.top + 8;
+    this.#revealedItemId = itemId;
   }
 
   async #deleteProject(projectId: string): Promise<void> {

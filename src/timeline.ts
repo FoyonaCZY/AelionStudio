@@ -206,6 +206,8 @@ export function renderTimeline(options: {
   readonly filmstrips?: ReadonlyMap<string, string>;
 }): void {
   const { root, project, view } = options;
+  const previousBody = root.querySelector('[data-role="body"]');
+  const scrollTop = previousBody instanceof HTMLElement ? previousBody.scrollTop : 0;
   const thumbs = options.thumbs ?? EMPTY_URLS;
   const filmstrips = options.filmstrips ?? EMPTY_URLS;
   const durationUs = timelineDurationUs(project);
@@ -305,6 +307,8 @@ export function renderTimeline(options: {
     </div>
   `;
   syncTimelineViewport(root, view, project);
+  const nextBody = root.querySelector('[data-role="body"]');
+  if (nextBody instanceof HTMLElement) nextBody.scrollTop = scrollTop;
 }
 
 export function syncTimelineViewport(
@@ -336,10 +340,15 @@ export function syncTimelineViewport(
 }
 
 export function isTimelineScrollbarHit(event: PointerEvent, root: HTMLElement): boolean {
-  const hscroll = root.querySelector('[data-role="hscroll"]');
-  if (hscroll instanceof HTMLElement) {
-    const bar = hscroll.getBoundingClientRect();
-    if (event.clientY >= bar.top && event.clientY <= bar.bottom) return true;
+  const target = event.target;
+  if (target instanceof Element) {
+    if (
+      target.closest('[data-item], [data-transition], [data-marker], .track-lane, .track-head') !==
+      null
+    ) {
+      return false;
+    }
+    if (target.closest('[data-role="hscroll"]') !== null) return true;
   }
   const body = root.querySelector('[data-role="body"]');
   if (!(body instanceof HTMLElement)) return false;
