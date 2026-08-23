@@ -163,6 +163,7 @@ export class EditorEngine {
   readonly #filmstripKeys = new Map<string, string>();
   #filmstripTail: Promise<void> = Promise.resolve();
   #filmstripAbort = new AbortController();
+  #waveformAbort = new AbortController();
   readonly #store = new IndexedDbProjectRevisionStore({ databaseName: STUDIO_DB });
   #materials: RuntimeMaterialRegistry | undefined;
   #uninstallMaterials: (() => void) | undefined;
@@ -394,6 +395,7 @@ export class EditorEngine {
     }
     const playheadUs = timeUs < 0 || timeUs >= durationUs ? 0 : timeUs;
     this.abortBackgroundFilmstrips();
+    this.abortBackgroundWaveforms();
     this.#startingPlayback = true;
     try {
       await session.player.seek(playheadUs);
@@ -803,6 +805,7 @@ export class EditorEngine {
       const result = await this.session.audio.waveform({
         itemIds: [item.id],
         maxPoints: 240,
+        signal: this.#waveformAbort.signal,
       });
       this.waveforms.set(item.id, result);
       return result;
@@ -838,6 +841,11 @@ export class EditorEngine {
   public abortBackgroundFilmstrips(): void {
     this.#filmstripAbort.abort(new DOMException('Playback started', 'AbortError'));
     this.#filmstripAbort = new AbortController();
+  }
+
+  public abortBackgroundWaveforms(): void {
+    this.#waveformAbort.abort(new DOMException('Playback started', 'AbortError'));
+    this.#waveformAbort = new AbortController();
   }
 
   public async ensureFilmstrip(item: ItemEntity): Promise<void> {

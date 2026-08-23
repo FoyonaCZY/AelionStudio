@@ -65,6 +65,7 @@ import {
   containLayout,
   EMPTY_PROGRAM_SNAP_GUIDES,
   hitTestProgram,
+  isProgramItem,
   itemSourceBox,
   pointerMovePosition,
   pointerOriginAngle,
@@ -2340,7 +2341,8 @@ export class Studio {
       if (playhead instanceof HTMLElement) {
         playhead.style.left = `${TRACK_HEADER_WIDTH + (this.view.currentTimeUs / 1_000_000) * this.view.pixelsPerSecond - this.view.scrollLeftPx}px`;
       }
-      this.#syncProgramOverlay();
+      const item = selected(this.engine.project, this.view.selectedItemId);
+      if (item !== undefined && isProgramItem(item)) this.#syncProgramOverlay();
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
