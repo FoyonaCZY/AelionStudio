@@ -298,6 +298,46 @@ describe('planMagneticMove swaps on a free track', () => {
     expect(placed.m1).toEqual({ trackId: 'A1', startUs: 3 * SECOND });
   });
 
+  it('moves a clip ahead of one sitting at the very start of the track', () => {
+    // The regression this pins. Centre against centre needed the two clips to
+    // sit exactly on top of each other, and with the left one anchored at zero
+    // the drag clamps before that can happen, so the exchange was unreachable.
+    const atZero = () =>
+      project({
+        V1: { kind: 'visual', items: [{ id: 'v', startUs: 0, durationUs: SECOND }] },
+        A1: {
+          kind: 'audio',
+          items: [
+            { id: 'first', startUs: 0, durationUs: 2 * SECOND },
+            { id: 'second', startUs: 2 * SECOND, durationUs: 2 * SECOND },
+          ],
+        },
+      });
+
+    // Half way over `first` is enough; it does not have to reach zero.
+    const halfway = starts(
+      planMagneticMove(atZero(), {
+        primaryTrackId: 'V1',
+        movedItemId: 'second',
+        targetTrackId: 'A1',
+        targetStartUs: 900_000,
+      }),
+    );
+    expect(halfway.second?.startUs).toBe(0);
+    expect(halfway.first?.startUs).toBe(2 * SECOND);
+
+    // And not before that: still pushing in, so it holds its own slot.
+    const notYet = starts(
+      planMagneticMove(atZero(), {
+        primaryTrackId: 'V1',
+        movedItemId: 'second',
+        targetTrackId: 'A1',
+        targetStartUs: 1 * SECOND + 500_000,
+      }),
+    );
+    expect(notYet).toEqual({ second: { trackId: 'A1', startUs: 2 * SECOND } });
+  });
+
   it('exchanges two equal, adjacent clips in either direction', () => {
     // The regression this pins. Equal lengths make the two centres coincide
     // exactly at the moment of the drop, and snapping lands the drag right
@@ -391,16 +431,18 @@ describe('planMagneticMove swaps on a free track', () => {
     expect(starts(plan)).toEqual({ m1: { trackId: 'A1', startUs: 8 * SECOND } });
   });
 
-  it('refuses a graze that is too small to count as a swap', () => {
-    // m1 would cover 2.5s..4.5s, so it laps only 0.5s of m2 -- under the half
-    // of the shorter clip a swap asks for, and still not somewhere it fits.
+  it('holds the clip in its own slot for a graze too small to count', () => {
+    // m1 would cover 2.5s..4.5s, so its leading edge reaches 4.5s and m2's
+    // midpoint is 5.5s: pushing into m2, but not yet past it. The clip stays
+    // where it belongs rather than the drop being refused, so the half of a
+    // neighbour a drag has to cross is not a dead band.
     const plan = planMagneticMove(audio(), {
       primaryTrackId: 'V1',
       movedItemId: 'm1',
       targetTrackId: 'A1',
       targetStartUs: 2 * SECOND + 500_000,
     });
-    expect(plan).toBeUndefined();
+    expect(starts(plan)).toEqual({ m1: { trackId: 'A1', startUs: 0 } });
   });
 });
 

@@ -503,25 +503,33 @@ function reorderFreeTrack(
   const oldIndex = items.findIndex(item => item.id === moved.id);
   if (oldIndex < 0) return undefined;
   const others = items.filter(item => item.id !== moved.id);
-  // Compared centre to centre: a clip changes place once it is half way past its
-  // neighbour, the same threshold the storyline uses.
+  // The leading edge of travel is what counts as having passed a neighbour: the
+  // in-point when heading left, the out-point when heading right, each measured
+  // against that neighbour's midpoint.
   //
-  // Two clips of the same length line up exactly when one is dropped onto the
-  // other, and that tie has to break towards where the clip is heading. Resolved
-  // one way it swallows every rightward exchange between equal clips; resolved
-  // the other it makes the first position on the track unreachable, there being
-  // no further left to go. Which of those is wrong depends on the direction, so
-  // the comparison does too.
-  const movedCentreUs = targetStartUs + moved.range.durationUs / 2;
+  // Centre against centre reads well but cannot express the move at all. Two
+  // clips of the same length only bring their centres level when they are
+  // exactly on top of each other, so the exchange has a single reachable
+  // position -- and when the left neighbour sits at the start of the track, the
+  // drag clamps at zero before ever getting there, which is why an audio clip
+  // could not be moved ahead of the first one on its track. A leading edge gives
+  // the gesture the whole half of the neighbour to happen in, both ways round.
   const headingRight = targetStartUs > moved.range.startUs;
+  const leadingEdgeUs = headingRight ? targetStartUs + moved.range.durationUs : targetStartUs;
   let newIndex = 0;
   for (const other of others) {
-    const otherCentreUs = other.range.startUs + other.range.durationUs / 2;
-    const passed = headingRight ? movedCentreUs >= otherCentreUs : movedCentreUs > otherCentreUs;
-    if (!passed) break;
+    const otherMidUs = other.range.startUs + other.range.durationUs / 2;
+    const passed = headingRight ? leadingEdgeUs > otherMidUs : leadingEdgeUs < otherMidUs;
+    if (headingRight ? !passed : passed) break;
     newIndex += 1;
   }
-  if (newIndex === oldIndex) return undefined;
+  if (newIndex === oldIndex) {
+    // Pushing into a neighbour without having passed it yet. Returning the clip
+    // to its own slot keeps the layout valid and stable while the gesture is
+    // still under way; refusing instead would paint a dead band across the half
+    // of every neighbour the drag has to cross to get anywhere.
+    return new Map([[moved.id, moved.range.startUs]]);
+  }
   const ordered = [...others.slice(0, newIndex), moved, ...others.slice(newIndex)];
   const low = Math.min(oldIndex, newIndex);
   const high = Math.max(oldIndex, newIndex);
