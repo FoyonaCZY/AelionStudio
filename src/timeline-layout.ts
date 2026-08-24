@@ -503,15 +503,22 @@ function reorderFreeTrack(
   const oldIndex = items.findIndex(item => item.id === moved.id);
   if (oldIndex < 0) return undefined;
   const others = items.filter(item => item.id !== moved.id);
-  // Compared centre to centre: a clip changes place once it is half way past
-  // its neighbour, the same threshold the storyline uses. Equal centres count as
-  // passed, because two clips of the same length line up exactly when one is
-  // dropped onto the other -- and treating that as "not yet" would make the
-  // first position on the track unreachable, there being no further left to go.
+  // Compared centre to centre: a clip changes place once it is half way past its
+  // neighbour, the same threshold the storyline uses.
+  //
+  // Two clips of the same length line up exactly when one is dropped onto the
+  // other, and that tie has to break towards where the clip is heading. Resolved
+  // one way it swallows every rightward exchange between equal clips; resolved
+  // the other it makes the first position on the track unreachable, there being
+  // no further left to go. Which of those is wrong depends on the direction, so
+  // the comparison does too.
   const movedCentreUs = targetStartUs + moved.range.durationUs / 2;
+  const headingRight = targetStartUs > moved.range.startUs;
   let newIndex = 0;
   for (const other of others) {
-    if (movedCentreUs <= other.range.startUs + other.range.durationUs / 2) break;
+    const otherCentreUs = other.range.startUs + other.range.durationUs / 2;
+    const passed = headingRight ? movedCentreUs >= otherCentreUs : movedCentreUs > otherCentreUs;
+    if (!passed) break;
     newIndex += 1;
   }
   if (newIndex === oldIndex) return undefined;

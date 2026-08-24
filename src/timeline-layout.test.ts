@@ -298,6 +298,45 @@ describe('planMagneticMove swaps on a free track', () => {
     expect(placed.m1).toEqual({ trackId: 'A1', startUs: 3 * SECOND });
   });
 
+  it('exchanges two equal, adjacent clips in either direction', () => {
+    // The regression this pins. Equal lengths make the two centres coincide
+    // exactly at the moment of the drop, and snapping lands the drag right
+    // there, so this is the ordinary case rather than an edge one.
+    const pair = () =>
+      project({
+        V1: { kind: 'visual', items: [{ id: 'v', startUs: 0, durationUs: SECOND }] },
+        A1: {
+          kind: 'audio',
+          items: [
+            { id: 'p', startUs: 0, durationUs: 2 * SECOND },
+            { id: 'q', startUs: 2 * SECOND, durationUs: 2 * SECOND },
+          ],
+        },
+      });
+
+    const rightward = starts(
+      planMagneticMove(pair(), {
+        primaryTrackId: 'V1',
+        movedItemId: 'p',
+        targetTrackId: 'A1',
+        targetStartUs: 2 * SECOND,
+      }),
+    );
+    expect(rightward.q?.startUs).toBe(0);
+    expect(rightward.p?.startUs).toBe(2 * SECOND);
+
+    const leftward = starts(
+      planMagneticMove(pair(), {
+        primaryTrackId: 'V1',
+        movedItemId: 'q',
+        targetTrackId: 'A1',
+        targetStartUs: 0,
+      }),
+    );
+    expect(leftward.q?.startUs).toBe(0);
+    expect(leftward.p?.startUs).toBe(2 * SECOND);
+  });
+
   it('keeps shoving past further clips within the same gesture', () => {
     // Three back to back takes; the last one is pushed to the front without
     // letting go. Each plan is resolved from the committed layout, so passing
