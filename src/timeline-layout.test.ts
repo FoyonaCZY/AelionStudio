@@ -1,7 +1,7 @@
 import type { AelionProject } from '@aelionsdk/project-schema';
 import { describe, expect, it } from 'vitest';
 
-import { planMagneticMove, storylineHoles } from './timeline-layout.js';
+import { planMagneticMove } from './timeline-layout.js';
 
 const SECOND = 1_000_000;
 
@@ -273,16 +273,16 @@ describe('planMagneticMove with linked audio', () => {
 
 describe('planMagneticMove refuses to stack clips', () => {
   it('rejects a move whose linked audio would land on its neighbour', () => {
-    // The reported case: a gap on the storyline, and audio that runs longer
-    // than the video it belongs to. Packing the video says nothing about the
-    // lengths below it, so dragging the last clip left would slide its audio
+    // The reported case: a filler clip between two takes, and audio that runs
+    // longer than the video it belongs to. Packing the video says nothing about
+    // the lengths below it, so dragging the last clip left would slide its audio
     // straight through the audio before it.
     const uneven = project({
       V1: {
         kind: 'visual',
         items: [
           { id: 'v1', startUs: 0, durationUs: 3 * SECOND, linkGroupId: 'g1' },
-          { id: 'gap', startUs: 3 * SECOND, durationUs: 5 * SECOND },
+          { id: 'filler', startUs: 3 * SECOND, durationUs: 5 * SECOND },
           { id: 'v2', startUs: 8 * SECOND, durationUs: 4 * SECOND, linkGroupId: 'g2' },
         ],
       },
@@ -331,34 +331,5 @@ describe('planMagneticMove refuses to stack clips', () => {
     });
     // Video alone repacks cleanly; the audio simply stays where it was.
     expect(starts(plan).v2?.startUs).toBe(0);
-  });
-});
-
-describe('storylineHoles', () => {
-  it('reports only interior holes, measured from the first clip', () => {
-    const holed = project({
-      V1: {
-        kind: 'visual',
-        items: [
-          { id: 'a', startUs: SECOND, durationUs: SECOND },
-          { id: 'b', startUs: 4 * SECOND, durationUs: SECOND },
-          { id: 'c', startUs: 5 * SECOND, durationUs: SECOND },
-        ],
-      },
-    });
-    expect(storylineHoles(holed, 'V1')).toEqual([{ startUs: 2 * SECOND, durationUs: 2 * SECOND }]);
-  });
-
-  it('reports nothing for an already packed storyline', () => {
-    const packed = project({
-      V1: {
-        kind: 'visual',
-        items: [
-          { id: 'a', startUs: 0, durationUs: SECOND },
-          { id: 'b', startUs: SECOND, durationUs: SECOND },
-        ],
-      },
-    });
-    expect(storylineHoles(packed, 'V1')).toEqual([]);
   });
 });

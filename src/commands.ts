@@ -34,7 +34,6 @@ import {
   probeSourceSize,
   readTransform,
   sequenceFormat,
-  type SequenceFormat,
   shapeItem,
   textItem,
   type VisualPatch,
@@ -53,7 +52,6 @@ import {
   insertPolicyForMedia,
   newTrackAnchorId,
   resolveInsertPlacement,
-  storylineHoles,
   type ResolveInsertOptions,
 } from './timeline-layout.js';
 
@@ -1552,102 +1550,6 @@ function syncTransitionsAfterMoves(
 }
 
 type EditTx = Parameters<EditCallback>[0];
-
-const DEFAULT_GAP_US = 1_000_000;
-
-function gapItem(
-  id: string,
-  trackId: string,
-  atUs: number,
-  durationUs: number,
-  format: SequenceFormat,
-): ItemEntity {
-  const base = generatorItem({
-    id,
-    trackId,
-    kind: 'solid',
-    colors: ['#000000'],
-    atUs: Math.max(0, Math.round(atUs)),
-    durationUs: Math.max(1, Math.round(durationUs)),
-    format,
-    name: '间隔',
-  });
-  return { ...base, metadata: { gap: true } } as ItemEntity;
-}
-
-function createGapIn(
-  tx: EditTx,
-  engine: EditorEngine,
-  trackId: string,
-  atUs: number,
-  durationUs: number,
-  format: SequenceFormat,
-): string {
-  const id = engine.ids.next('item');
-  tx.createEntity(
-    'items',
-    id,
-    gapItem(id, trackId, atUs, durationUs, format) as unknown as JsonObject,
-  );
-  tx.listInsert('tracks', trackId, ['itemIds'], id);
-  return id;
-}
-
-/** Inserts deliberate blank space on a track. */
-export function insertGap(
-  engine: EditorEngine,
-  trackId: string,
-  atUs: number,
-  durationUs = DEFAULT_GAP_US,
-): string | undefined {
-  const project = requireProject(engine);
-  const track = project.tracks[trackId];
-  if (track === undefined || track.locked || track.kind !== 'visual') return undefined;
-  const format = sequenceFormat(project);
-  let id: string | undefined;
-  requireSession(engine).transaction.edit(
-    tx => {
-      id = createGapIn(tx, engine, trackId, atUs, durationUs, format);
-    },
-    { label: '插入间隔' },
-  );
-  return id;
-}
-
-/** Replaces a clip with blank space of the same length, keeping the cut intact. */
-export function replaceWithGap(engine: EditorEngine, itemId: string): void {
-  const project = requireProject(engine);
-  const item = project.items[itemId];
-  if (item === undefined) return;
-  const format = sequenceFormat(project);
-  requireSession(engine).transaction.edit(
-    tx => {
-      tx.listRemove('tracks', item.trackId, ['itemIds'], item.id);
-      tx.deleteEntity('items', item.id);
-      createGapIn(tx, engine, item.trackId, item.range.startUs, item.range.durationUs, format);
-    },
-    { label: '替换为间隔' },
-  );
-}
-
-/**
- * Turns every hole on a track into a real gap Item, inside a caller's edit.
- *
- * Existing projects were built when a track could hold arbitrary holes. Packing
- * such a track would silently delete that blank space, so a magnetic drag
- * materialises it first. Running inside the drag's interactive edit keeps the
- * whole gesture a single undo, and cancelling the drag rolls this back too.
- */
-export function materializeGapsIn(tx: EditTx, engine: EditorEngine, trackId: string): number {
-  const project = requireProject(engine);
-  const holes = storylineHoles(project, trackId);
-  if (holes.length === 0) return 0;
-  const format = sequenceFormat(project);
-  for (const hole of holes) {
-    createGapIn(tx, engine, trackId, hole.startUs, hole.durationUs, format);
-  }
-  return holes.length;
-}
 
 /** Whether a resolved drag would actually change anything. */
 export function placementsChange(

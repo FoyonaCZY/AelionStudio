@@ -540,20 +540,3 @@ export function planMagneticMove(
     mode: targetIsPrimary ? 'reorder' : 'free',
   };
 }
-
-/** Holes on the storyline, as ranges a gap Item would need to fill. */
-export function storylineHoles(
-  project: AelionProject,
-  trackId: string,
-): { readonly startUs: number; readonly durationUs: number }[] {
-  const items = itemsOnTrack(project, trackId);
-  const holes: { startUs: number; durationUs: number }[] = [];
-  let cursor = items[0]?.range.startUs ?? 0;
-  for (const item of items) {
-    if (item.range.startUs > cursor) {
-      holes.push({ startUs: cursor, durationUs: item.range.startUs - cursor });
-    }
-    cursor = Math.max(cursor, item.range.startUs + item.range.durationUs);
-  }
-  return holes;
-}

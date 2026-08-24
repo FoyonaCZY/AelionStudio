@@ -35,7 +35,6 @@ import {
   setTransitionDuration,
   patchAudio,
   patchVisual,
-  materializeGapsIn,
   applyPlacementsIn,
   placementsChange,
   resizeTimelineItem,
@@ -66,7 +65,7 @@ import {
   visualFitScale,
   type VisualTransform,
 } from './project.js';
-import { planMagneticMove, storylineHoles, type MagneticPlan } from './timeline-layout.js';
+import { planMagneticMove, type MagneticPlan } from './timeline-layout.js';
 import {
   collectProgramSnapTargets,
   containLayout,
@@ -1888,7 +1887,7 @@ export class Studio {
           }
         : {}),
     };
-    if (kind === 'move') this.#beginMove();
+    if (kind === 'move') this.engine.beginGesture('移动');
     this.#els.timeline.setPointerCapture(event.pointerId);
     this.scheduleRender();
   }
@@ -1980,27 +1979,6 @@ export class Studio {
    * is what lets neighbours animate instead of jumping: the DOM can interpolate
    * towards a position that has not happened yet.
    */
-  /**
-   * Opens the drag's interactive edit and makes any pre-existing holes real.
-   *
-   * The storyline could hold arbitrary holes before it was magnetic, and packing
-   * would silently swallow them. They have to become gap Items *before* the
-   * first plan is resolved, or that plan would pack around clips it never saw.
-   * Doing it inside the gesture's interactive edit keeps it one undo, and a
-   * cancelled drag rolls it back with everything else.
-   */
-  #beginMove(): void {
-    const live = this.engine.beginGesture('移动');
-    const project = this.engine.project;
-    if (live === undefined || project === null) return;
-    const primaryTrackId = primaryVisualTrackId(project);
-    if (primaryTrackId === undefined) return;
-    if (storylineHoles(project, primaryTrackId).length === 0) return;
-    live.update(tx => {
-      materializeGapsIn(tx, this.engine, primaryTrackId);
-    });
-  }
-
   #planMove(gesture: Gesture, item: ItemEntity, event: PointerEvent, timeUs: number): void {
     const project = this.engine.project;
     if (project === null) return;
@@ -2040,9 +2018,8 @@ export class Studio {
   /**
    * Writes the resolved drag as one edit, or nothing at all.
    *
-   * Pre-existing holes on the storyline become real gap Items first, in the same
-   * interactive edit, so packing cannot silently swallow blank space the project
-   * already had and the whole gesture stays a single undo.
+   * Nothing has been written up to this point, so a refused position, an
+   * unchanged layout and a cancelled gesture all leave the Project untouched.
    */
   #commitMove(gesture: Gesture): void {
     const plan = gesture.plan;
@@ -2056,7 +2033,7 @@ export class Studio {
     if (gesture.planValid !== true) {
       this.engine.endGesture(true);
       clearTimelineDrag(this.#els.timeline);
-      this.setStatus('这里放不下：联动的音频会和相邻片段重叠', true);
+      this.setStatus('这里放不下：联动的音频会和相邻片段重叠，可先取消联动再单独移动', true);
       return;
     }
     if (!placementsChange(project, plan.placements)) {

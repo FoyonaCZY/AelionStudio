@@ -10,7 +10,6 @@ import { encodeHex, readLinearColor } from './color.js';
 import {
   clipLabel,
   contentDurationUs,
-  isGapItem,
   itemMediaRef,
   orderedTracks,
   transitionLabel,
@@ -344,7 +343,6 @@ function insertLineHtml(drag: TimelineDragPreview | undefined, view: ViewState):
 
 function clipClass(item: ItemEntity, selected: boolean, hasFilm: boolean): string {
   const parts = ['clip', `clip-${item.type}`];
-  if (isGapItem(item)) parts.push('clip-gap');
   if (selected) parts.push('selected');
   if (!item.enabled) parts.push('disabled');
   if (item.linkGroupId !== undefined) parts.push('linked');

@@ -1797,17 +1797,6 @@ kbd {
   border-left: 4px solid transparent;
 }
 
-/* Deliberate blank space reads as structure, not as a clip with content. */
-.timeline .clip.clip-gap {
-  color: #8a8a8a;
-  background: repeating-linear-gradient(45deg, #1c1c1c, #1c1c1c 6px, #242424 6px, #242424 12px);
-  border-color: #333;
-}
-.timeline .clip.clip-gap .clip-label {
-  font-style: italic;
-  opacity: 0.75;
-}
-
 /* Nowhere to land: the clip stays in hand and nothing gets shoved aside. */
 .timeline .clip.dragging.invalid {
   opacity: 0.55;
