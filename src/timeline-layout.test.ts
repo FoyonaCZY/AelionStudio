@@ -298,6 +298,50 @@ describe('planMagneticMove swaps on a free track', () => {
     expect(placed.m1).toEqual({ trackId: 'A1', startUs: 3 * SECOND });
   });
 
+  it('keeps shoving past further clips within the same gesture', () => {
+    // Three back to back takes; the last one is pushed to the front without
+    // letting go. Each plan is resolved from the committed layout, so passing
+    // a second centre simply moves further rather than needing a new gesture.
+    const run = () =>
+      project({
+        V1: { kind: 'visual', items: [{ id: 'v', startUs: 0, durationUs: SECOND }] },
+        A1: {
+          kind: 'audio',
+          items: [
+            { id: 'x', startUs: 0, durationUs: 2 * SECOND },
+            { id: 'y', startUs: 2 * SECOND, durationUs: 2 * SECOND },
+            { id: 'z', startUs: 4 * SECOND, durationUs: 2 * SECOND },
+          ],
+        },
+      });
+
+    // Far enough left to pass y, but not x.
+    const onePlace = starts(
+      planMagneticMove(run(), {
+        primaryTrackId: 'V1',
+        movedItemId: 'z',
+        targetTrackId: 'A1',
+        targetStartUs: 2 * SECOND,
+      }),
+    );
+    expect(onePlace.z?.startUs).toBe(2 * SECOND);
+    expect(onePlace.y?.startUs).toBe(4 * SECOND);
+    expect(onePlace.x).toBeUndefined();
+
+    // Keep going in the same drag: now past x as well.
+    const twoPlaces = starts(
+      planMagneticMove(run(), {
+        primaryTrackId: 'V1',
+        movedItemId: 'z',
+        targetTrackId: 'A1',
+        targetStartUs: 0,
+      }),
+    );
+    expect(twoPlaces.z?.startUs).toBe(0);
+    expect(twoPlaces.x?.startUs).toBe(2 * SECOND);
+    expect(twoPlaces.y?.startUs).toBe(4 * SECOND);
+  });
+
   it('leaves the other clip alone for a drop that misses it', () => {
     const plan = planMagneticMove(audio(), {
       primaryTrackId: 'V1',

@@ -478,6 +478,58 @@ function stacksOnAnyTrack(
   return false;
 }
 
+/**
+ * Reorders a clip among its neighbours on a track that is not the storyline.
+ *
+ * Resolved from the committed layout and the pointer alone, never from the last
+ * preview, which is what makes it continue as long as the drag does: pushing
+ * further simply passes more centres, so a clip can be shoved several places
+ * along without letting go. A single exchange is just the two-clip case.
+ *
+ * Only the span between the old and new positions is reseated, and it is packed
+ * from the in-point of whichever clip started that span, so clips outside it
+ * never move and unequal lengths cannot leave the pair overlapping. Packing can
+ * only close gaps inside the span, so it can never collide with what follows.
+ *
+ * Returns `undefined` when the order is unchanged, leaving the drop free.
+ */
+function reorderFreeTrack(
+  project: AelionProject,
+  trackId: string,
+  moved: ItemEntity,
+  targetStartUs: number,
+): Map<string, number> | undefined {
+  const items = itemsOnTrack(project, trackId);
+  const oldIndex = items.findIndex(item => item.id === moved.id);
+  if (oldIndex < 0) return undefined;
+  const others = items.filter(item => item.id !== moved.id);
+  // Compared centre to centre: a clip changes place once it is half way past
+  // its neighbour, the same threshold the storyline uses. Equal centres count as
+  // passed, because two clips of the same length line up exactly when one is
+  // dropped onto the other -- and treating that as "not yet" would make the
+  // first position on the track unreachable, there being no further left to go.
+  const movedCentreUs = targetStartUs + moved.range.durationUs / 2;
+  let newIndex = 0;
+  for (const other of others) {
+    if (movedCentreUs <= other.range.startUs + other.range.durationUs / 2) break;
+    newIndex += 1;
+  }
+  if (newIndex === oldIndex) return undefined;
+  const ordered = [...others.slice(0, newIndex), moved, ...others.slice(newIndex)];
+  const low = Math.min(oldIndex, newIndex);
+  const high = Math.max(oldIndex, newIndex);
+  const anchorUs = items[low]?.range.startUs ?? targetStartUs;
+  const placed = new Map<string, number>();
+  let cursor = anchorUs;
+  for (let index = low; index <= high; index += 1) {
+    const item = ordered[index];
+    if (item === undefined) continue;
+    placed.set(item.id, cursor);
+    cursor += item.range.durationUs;
+  }
+  return placed;
+}
+
 export function planMagneticMove(
   project: AelionProject,
   options: {
@@ -516,42 +568,26 @@ export function planMagneticMove(
     }
     movedStartUs = packed.get(moved.id) ?? targetStartUs;
   } else {
-    // Off the storyline there is no order to insert into, so landing on top of a
-    // clip means trading places with it. Without this the only outcome would be
-    // a refusal, which left no way at all to reorder two clips on an audio or
-    // overlay track.
-    const occupant =
-      moved.trackId === options.targetTrackId
-        ? overlappingItemOnTrack(
-            project,
-            options.targetTrackId,
-            targetStartUs,
-            moved.range.durationUs,
-            moved.id,
-          )
-        : undefined;
-    const swapping =
-      occupant !== undefined &&
-      shouldSwapOccupant(
+    // Reordering is only for pushing into somebody. A drop that lands clear of
+    // every other clip stays exactly where it was put, which is the whole point
+    // of a track that is not the storyline.
+    const pushingInto =
+      moved.trackId === options.targetTrackId &&
+      overlappingItemOnTrack(
+        project,
+        options.targetTrackId,
         targetStartUs,
         moved.range.durationUs,
-        occupant.range.startUs,
-        occupant.range.durationUs,
-      );
-    if (swapping && occupant !== undefined) {
-      // Seat the pair back to back from the earlier of the two in-points, so a
-      // swap between clips of different lengths cannot leave them overlapping.
-      const movedIsFirst = moved.range.startUs <= occupant.range.startUs;
-      const anchorUs = Math.min(moved.range.startUs, occupant.range.startUs);
-      const packed = movedIsFirst
-        ? packLeftRightSwap(anchorUs, occupant.range.durationUs)
-        : packLeftRightSwap(anchorUs, moved.range.durationUs);
-      movedStartUs = movedIsFirst ? packed.leftStartUs : packed.rightStartUs;
-      placements.set(occupant.id, {
-        trackId: options.targetTrackId,
-        startUs: movedIsFirst ? packed.rightStartUs : packed.leftStartUs,
-      });
-      placements.set(moved.id, { trackId: options.targetTrackId, startUs: movedStartUs });
+        moved.id,
+      ) !== undefined;
+    const reordered = pushingInto
+      ? reorderFreeTrack(project, options.targetTrackId, moved, targetStartUs)
+      : undefined;
+    if (reordered !== undefined) {
+      for (const [id, startUs] of reordered) {
+        placements.set(id, { trackId: options.targetTrackId, startUs });
+      }
+      movedStartUs = reordered.get(moved.id) ?? targetStartUs;
     } else {
       movedStartUs = targetStartUs;
       placements.set(moved.id, { trackId: options.targetTrackId, startUs: movedStartUs });
