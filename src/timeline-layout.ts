@@ -516,8 +516,46 @@ export function planMagneticMove(
     }
     movedStartUs = packed.get(moved.id) ?? targetStartUs;
   } else {
-    movedStartUs = targetStartUs;
-    placements.set(moved.id, { trackId: options.targetTrackId, startUs: movedStartUs });
+    // Off the storyline there is no order to insert into, so landing on top of a
+    // clip means trading places with it. Without this the only outcome would be
+    // a refusal, which left no way at all to reorder two clips on an audio or
+    // overlay track.
+    const occupant =
+      moved.trackId === options.targetTrackId
+        ? overlappingItemOnTrack(
+            project,
+            options.targetTrackId,
+            targetStartUs,
+            moved.range.durationUs,
+            moved.id,
+          )
+        : undefined;
+    const swapping =
+      occupant !== undefined &&
+      shouldSwapOccupant(
+        targetStartUs,
+        moved.range.durationUs,
+        occupant.range.startUs,
+        occupant.range.durationUs,
+      );
+    if (swapping && occupant !== undefined) {
+      // Seat the pair back to back from the earlier of the two in-points, so a
+      // swap between clips of different lengths cannot leave them overlapping.
+      const movedIsFirst = moved.range.startUs <= occupant.range.startUs;
+      const anchorUs = Math.min(moved.range.startUs, occupant.range.startUs);
+      const packed = movedIsFirst
+        ? packLeftRightSwap(anchorUs, occupant.range.durationUs)
+        : packLeftRightSwap(anchorUs, moved.range.durationUs);
+      movedStartUs = movedIsFirst ? packed.leftStartUs : packed.rightStartUs;
+      placements.set(occupant.id, {
+        trackId: options.targetTrackId,
+        startUs: movedIsFirst ? packed.rightStartUs : packed.leftStartUs,
+      });
+      placements.set(moved.id, { trackId: options.targetTrackId, startUs: movedStartUs });
+    } else {
+      movedStartUs = targetStartUs;
+      placements.set(moved.id, { trackId: options.targetTrackId, startUs: movedStartUs });
+    }
     // Leaving the storyline closes the hole the clip was occupying.
     if (sourceWasPrimary && primaryTrackId !== undefined) {
       const residents = plannedItems(project, primaryTrackId, moved.id);

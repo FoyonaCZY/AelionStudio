@@ -271,6 +271,56 @@ describe('planMagneticMove with linked audio', () => {
   });
 });
 
+describe('planMagneticMove swaps on a free track', () => {
+  const audio = () =>
+    project({
+      V1: { kind: 'visual', items: [{ id: 'v', startUs: 0, durationUs: SECOND }] },
+      A1: {
+        kind: 'audio',
+        items: [
+          { id: 'm1', startUs: 0, durationUs: 2 * SECOND },
+          { id: 'm2', startUs: 4 * SECOND, durationUs: 3 * SECOND },
+        ],
+      },
+    });
+
+  it('trades places with the clip it is dropped onto', () => {
+    const plan = planMagneticMove(audio(), {
+      primaryTrackId: 'V1',
+      movedItemId: 'm1',
+      targetTrackId: 'A1',
+      targetStartUs: 5 * SECOND,
+    });
+    const placed = starts(plan);
+    // Seated back to back from the earlier in-point, so unequal lengths cannot
+    // leave them overlapping.
+    expect(placed.m2).toEqual({ trackId: 'A1', startUs: 0 });
+    expect(placed.m1).toEqual({ trackId: 'A1', startUs: 3 * SECOND });
+  });
+
+  it('leaves the other clip alone for a drop that misses it', () => {
+    const plan = planMagneticMove(audio(), {
+      primaryTrackId: 'V1',
+      movedItemId: 'm1',
+      targetTrackId: 'A1',
+      targetStartUs: 8 * SECOND,
+    });
+    expect(starts(plan)).toEqual({ m1: { trackId: 'A1', startUs: 8 * SECOND } });
+  });
+
+  it('refuses a graze that is too small to count as a swap', () => {
+    // m1 would cover 2.5s..4.5s, so it laps only 0.5s of m2 -- under the half
+    // of the shorter clip a swap asks for, and still not somewhere it fits.
+    const plan = planMagneticMove(audio(), {
+      primaryTrackId: 'V1',
+      movedItemId: 'm1',
+      targetTrackId: 'A1',
+      targetStartUs: 2 * SECOND + 500_000,
+    });
+    expect(plan).toBeUndefined();
+  });
+});
+
 describe('planMagneticMove refuses to stack clips', () => {
   it('rejects a move whose linked audio would land on its neighbour', () => {
     // The reported case: a filler clip between two takes, and audio that runs

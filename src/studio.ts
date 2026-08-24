@@ -2005,10 +2005,13 @@ export class Studio {
     // committed: releasing there would drop the clip somewhere the pointer is not.
     gesture.planValid = plan !== undefined;
     if (plan !== undefined) gesture.plan = plan;
-    // Measured in content pixels against the committed position, so the ghost
-    // keeps tracking the pointer even while the timeline auto-scrolls.
+    // Horizontally the ghost rides the *snapped* position, not the raw pointer.
+    // Drawing it at the raw position meant snapping only happened on release,
+    // with nothing on screen to show it: the clip appeared not to snap at all.
+    // The deviation is at most the snap radius, so it still reads as following
+    // the hand. Vertically it stays raw, so it can leave the track entirely.
     const committedPx = (item.range.startUs / 1_000_000) * this.view.pixelsPerSecond;
-    const pointerPx = (intended / 1_000_000) * this.view.pixelsPerSecond;
+    const pointerPx = (targetStartUs / 1_000_000) * this.view.pixelsPerSecond;
     gesture.ghostOffsetPx = {
       x: pointerPx - committedPx,
       y: event.clientY - (gesture.originClientY ?? event.clientY),
