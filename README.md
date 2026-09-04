@@ -10,6 +10,7 @@ Nothing uploads. Nothing queues. Your footage never leaves your machine.
 
 [![Try it](https://img.shields.io/badge/try-studio.aelion.chat-3d8bfd.svg)](https://studio.aelion.chat)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
+[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-2ea44f.svg)](https://github.com/FoyonaCZY/AelionStudio/releases/tag/v0.1.0)
 [![Built on AelionSDK](https://img.shields.io/badge/built%20on-AelionSDK-3d8bfd.svg)](https://github.com/FoyonaCZY/AelionSDK)
 [![No install](https://img.shields.io/badge/install-none-8a5528.svg)](#getting-started)
 [![Media never uploaded](https://img.shields.io/badge/media-never%20uploaded-5c4480.svg)](#your-footage-never-leaves-the-machine)
@@ -19,6 +20,8 @@ Nothing uploads. Nothing queues. Your footage never leaves your machine.
 ---
 
 Aelion Studio is a complete video editor that lives in a browser tab. Multi-track timeline, on-canvas transforms, captions, audio mixing, retiming, transitions, effects — and **it encodes MP4 locally**. No render server, no upload wait, no export queue.
+
+Version **0.1.0** is the first public release. It targets AelionSDK **2.0.0** and writes the Project v2 schema.
 
 Once the page has loaded, editing and exporting make **zero network requests**.
 
@@ -153,7 +156,7 @@ Studio is self-contained. It depends on the published `@aelionsdk/*` packages, s
 ```bash
 git clone https://github.com/FoyonaCZY/AelionStudio.git
 cd AelionStudio
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 ### Develop
@@ -234,7 +237,7 @@ Better stated up front than discovered later:
 
 ## Architecture
 
-Studio is built strictly on the **public entry points** of [`@aelionsdk/sdk`](https://github.com/FoyonaCZY/AelionSDK) and `@aelionsdk/export` — no private APIs, no patches. Everything you see here can be built into your own product with the same interfaces.
+Studio 0.1.0 is built strictly on the **public 2.0 entry points** of [`@aelionsdk/sdk`](https://github.com/FoyonaCZY/AelionSDK) and `@aelionsdk/export` — no private APIs, no patches. Everything you see here can be built into your own product with the same interfaces.
 
 ```
 Aelion Studio  ·  plain TypeScript, no framework

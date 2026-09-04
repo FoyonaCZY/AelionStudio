@@ -125,11 +125,25 @@ export function sequenceFormat(project: AelionProject): SequenceFormat {
   };
 }
 
+/**
+ * Content durations already measured, keyed by the document they belong to.
+ *
+ * A commit publishes a new frozen Project object, so identity is an exact key:
+ * the same object always has the same duration, and an edited one is a
+ * different object and misses. Without this the whole Item collection is walked
+ * twice per frame -- once for the transport readout and once for the timeline's
+ * content width -- on every frame of playback.
+ */
+const contentDurations = new WeakMap<object, number>();
+
 export function contentDurationUs(project: AelionProject): number {
+  const cached = contentDurations.get(project);
+  if (cached !== undefined) return cached;
   let maxUs = 0;
   for (const item of Object.values(project.items)) {
     maxUs = Math.max(maxUs, item.range.startUs + item.range.durationUs);
   }
+  if (Object.isFrozen(project)) contentDurations.set(project, maxUs);
   return maxUs;
 }
 
@@ -224,12 +238,18 @@ export function mediaLayerVisual(
 
 export function createEmptyProject(options: CreateProjectOptions): AelionProject {
   const builder = createProject(options);
-  builder.addTrack({ id: 'track_v1', kind: 'visual', name: 'V1' });
-  builder.addTrack({ id: 'track_v2', kind: 'visual', name: 'V2' });
-  builder.addTrack({ id: 'track_v3', kind: 'visual', name: 'V3' });
-  builder.addTrack({ id: 'track_c1', kind: 'caption', name: 'C1' });
-  builder.addTrack({ id: 'track_a1', kind: 'audio', name: 'A1' });
-  builder.addTrack({ id: 'track_a2', kind: 'audio', name: 'A2' });
+  builder.addTrack({
+    id: 'track_v1',
+    kind: 'visual',
+    name: 'V1',
+    role: 'storyline',
+    occupancy: 'exclusive',
+  });
+  builder.addTrack({ id: 'track_v2', kind: 'visual', name: 'V2', role: 'overlay' });
+  builder.addTrack({ id: 'track_v3', kind: 'visual', name: 'V3', role: 'overlay' });
+  builder.addTrack({ id: 'track_c1', kind: 'caption', name: 'C1', role: 'overlay' });
+  builder.addTrack({ id: 'track_a1', kind: 'audio', name: 'A1', role: 'overlay' });
+  builder.addTrack({ id: 'track_a2', kind: 'audio', name: 'A2', role: 'overlay' });
   return builder.build();
 }
 
@@ -255,18 +275,18 @@ export function orderedTracks(project: AelionProject): TrackEntity[] {
 }
 
 /**
- * The magnetic storyline: the visual track that renders lowest.
+ * The magnetic storyline declared by Project v2, with a legacy fallback.
  *
- * `orderedTracks` reverses visual tracks for display, so the lane at the bottom
- * of the timeline is the first visual track in sequence order. That lane carries
- * the cut everything else is timed against, so it is the one kept packed; every
- * other track stays freely positionable.
+ * Project v2 stores the product decision explicitly. Older Studio projects do
+ * not carry the role, so the first visual Track remains their storyline; it is
+ * also the lane rendered at the bottom after `orderedTracks` reverses visuals.
  */
 export function primaryVisualTrackId(project: AelionProject | null): string | undefined {
   if (project === null) return undefined;
   const sequence = project.sequences[project.settings.defaultSequenceId];
   if (sequence === undefined) return undefined;
-  return sequence.trackIds.find(id => project.tracks[id]?.kind === 'visual');
+  const declared = sequence.trackIds.find(id => project.tracks[id]?.role === 'storyline');
+  return declared ?? sequence.trackIds.find(id => project.tracks[id]?.kind === 'visual');
 }
 
 export function itemSource(item: ItemEntity): JsonObject | undefined {
@@ -707,6 +727,7 @@ export function newTrackEntity(options: {
     id,
     sequenceId: options.project.settings.defaultSequenceId,
     kind: options.kind,
+    role: 'overlay',
     name: `${prefix}${counts + 1}`,
     enabled: true,
     locked: false,

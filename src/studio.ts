@@ -2,10 +2,12 @@ import { SeekableMemorySink } from '@aelionsdk/export';
 import type { AelionProject, ItemEntity } from '@aelionsdk/project-schema';
 import {
   exportSubtitleTrack,
+  planTimelineMove,
   type AelionInteractiveEdit,
   type AelionProfileExportOptions,
   type PreviewCanvasPointerEvent,
   type PreviewCanvasQuality,
+  type TimelineMovePlan,
 } from '@aelionsdk/sdk';
 
 import {
@@ -65,7 +67,7 @@ import {
   visualFitScale,
   type VisualTransform,
 } from './project.js';
-import { planMagneticMove, type MagneticPlan } from './timeline-layout.js';
+
 import {
   collectProgramSnapTargets,
   containLayout,
@@ -95,6 +97,7 @@ import {
   clampTimelineScroll,
   hitTimeFromEvent,
   isTimelineScrollbarHit,
+  itemInBand,
   applyTimelineDrag,
   clearTimelineDrag,
   renderTimeline,
@@ -102,8 +105,11 @@ import {
   snapPlayheadTime,
   snapTime,
   syncTimelineViewport,
+  timelineBand,
   timelineDurationUs,
+  timelineViewportWidthPx,
   TRACK_HEADER_WIDTH,
+  type TimelineBand,
 } from './timeline.js';
 import {
   allowsNativeContextMenu,
@@ -178,7 +184,7 @@ interface Gesture {
   /** Pointer position when the clip was picked up, for the ghost offset. */
   originClientY?: number;
   /** Resolved on every move, written only on release. */
-  plan?: MagneticPlan;
+  plan?: TimelineMovePlan;
   /** How far the ghost has been carried, in timeline pixels. */
   ghostOffsetPx?: { x: number; y: number };
   /** Whether the position under the pointer right now can actually be dropped. */
@@ -224,6 +230,16 @@ export class Studio {
     preflight: requiredElement('#export-preflight'),
   };
   #gesture: Gesture | undefined;
+  /**
+   * State the last preview-queue pass ran against.
+   *
+   * The pass walks the Project to find Items in the visible band that still
+   * need a waveform or a filmstrip. Nothing new can appear while the band, the
+   * revision and the decoded set all stand still, so repeating the walk on
+   * every frame of playback only re-proves that there is nothing to do -- and
+   * on a long timeline that walk is the largest thing a frame does.
+   */
+  #queuedFor: string | undefined;
   #programGesture: ProgramGesture | undefined;
   #programEdit: AelionInteractiveEdit | undefined;
   #programApplyScheduled = false;
@@ -372,14 +388,16 @@ export class Studio {
     this.#setPressed('safe-area', this.view.showSafeArea);
     const quality = document.querySelector('#quality');
     if (quality instanceof HTMLSelectElement) quality.value = this.view.previewQuality;
-    const libraryThumbs = libraryPreviewUrls(project, this.engine.thumbs, this.engine.filmstrips);
-    const assetStamp =
-      project === null
-        ? ''
-        : Object.values(project.assets)
-            .map(asset => `${asset.id}:${typeof asset.name === 'string' ? asset.name : ''}`)
-            .join(',');
-    const libraryKey = `${this.view.libraryTab}:${this.view.libraryView}:${this.view.librarySort}:${assetStamp}:${libraryThumbs.size.toString()}`;
+    // Both keys are derived from the revision and the preview version rather
+    // than from scanning the document. A key exists to avoid a rebuild, so
+    // computing it has to be cheaper than the rebuild it saves -- walking every
+    // Asset, Item and filmstrip to build a string was costing more per frame
+    // than the timeline rebuild it was guarding, on every frame of playback.
+    // Assets, names and Transitions only change through a commit, which is
+    // exactly what the revision counts.
+    const previewVersion = this.engine.previewVersion;
+    const revisionKey = snap?.revision?.toString() ?? '';
+    const libraryKey = `${this.view.libraryTab}:${this.view.libraryView}:${this.view.librarySort}:${revisionKey}:${previewVersion.toString()}`;
     if (libraryKey !== this.#libraryKey) {
       this.#libraryKey = libraryKey;
       renderLibrary({
@@ -388,7 +406,7 @@ export class Studio {
         tab: this.view.libraryTab,
         view: this.view.libraryView,
         sort: this.view.librarySort,
-        thumbs: libraryThumbs,
+        thumbs: libraryPreviewUrls(project, this.engine.thumbs, this.engine.filmstrips),
       });
     }
     const focused = document.activeElement;
@@ -418,7 +436,8 @@ export class Studio {
     if (this.#programGesture === undefined) {
       const moveGesture = this.#gesture?.kind === 'move' ? this.#gesture : undefined;
       const dragPlan = moveGesture?.plan;
-      const timelineKey = `${snap?.revision?.toString() ?? ''}:${this.view.selectedItemId ?? ''}:${this.view.selectedTransitionId ?? ''}:${this.view.selectedMarkerId ?? ''}:${this.view.selectedTrackId ?? ''}:${this.view.pixelsPerSecond.toString()}:${durationUs.toString()}:${this.engine.waveforms.size.toString()}:${this.engine.thumbs.size.toString()}:${[...this.engine.filmstrips.keys()].join(',')}:${project === null ? '' : Object.keys(project.transitions).join(',')}`;
+      const band = timelineBand(this.view, timelineViewportWidthPx(this.#els.timeline));
+      const timelineKey = `${band.index.toString()}:${revisionKey}:${this.view.selectedItemId ?? ''}:${this.view.selectedTransitionId ?? ''}:${this.view.selectedMarkerId ?? ''}:${this.view.selectedTrackId ?? ''}:${this.view.pixelsPerSecond.toString()}:${durationUs.toString()}:${previewVersion.toString()}`;
       if (timelineKey !== this.#timelineKey) {
         this.#timelineKey = timelineKey;
         renderTimeline({
@@ -447,7 +466,6 @@ export class Studio {
       if (dragPlan !== undefined && moveGesture !== undefined) {
         applyTimelineDrag({
           root: this.#els.timeline,
-          project,
           view: this.view,
           drag: {
             itemId: moveGesture.itemId,
@@ -457,8 +475,18 @@ export class Studio {
           },
         });
       }
-      this.#queueWaveforms(project);
-      if (this.#gesture === undefined) this.#queueFilmstrips(project);
+      // A queue pass can only find new work when the band moves, the Project
+      // changes, a decode lands, or one of the conditions that hold the passes
+      // off is lifted. Everything they read is in this key, so repeating the
+      // walk while it stands still can only re-prove there is nothing to do.
+      const playing = this.engine.session?.player.state === 'playing';
+      const previewReady = (this.engine.preview?.snapshot().renderedFrames ?? 0) > 0;
+      const queueKey = `${band.index.toString()}:${revisionKey}:${previewVersion.toString()}:${playing ? 1 : 0}:${previewReady ? 1 : 0}:${this.#gesture === undefined ? 0 : 1}`;
+      if (queueKey !== this.#queuedFor) {
+        this.#queuedFor = queueKey;
+        this.#queueWaveforms(project, band);
+        if (this.#gesture === undefined) this.#queueFilmstrips(project, band);
+      }
       this.#revealSelectedClip();
     }
     this.#syncProgramOverlay();
@@ -1994,8 +2022,10 @@ export class Studio {
     const targetStartUs = this.view.snap
       ? snapItemStart(intended, item, project, this.view)
       : intended;
-    const plan = planMagneticMove(project, {
-      primaryTrackId: primaryVisualTrackId(project),
+    const plan = planTimelineMove(project, {
+      // Studio's own documents predate the Track role, so the storyline is
+      // named outright rather than read off the Track.
+      storylineTrackId: primaryVisualTrackId(project) ?? null,
       movedItemId: item.id,
       targetTrackId,
       targetStartUs,
@@ -2073,6 +2103,10 @@ export class Studio {
     this.view.scrollLeftPx = Math.max(0, target.scrollLeft);
     clampTimelineScroll(this.view, this.engine.project, this.#els.timeline);
     syncTimelineViewport(this.#els.timeline, this.view, this.engine.project);
+    // Clips exist only for a band around the viewport, so a scroll that leaves
+    // it needs new markup. The render key decides whether that happened; inside
+    // a band this costs one string comparison.
+    this.scheduleRender();
   }
 
   #onTimelineWheel(event: WheelEvent): void {
@@ -2227,6 +2261,7 @@ export class Studio {
     this.view.scrollLeftPx += delta;
     clampTimelineScroll(this.view, this.engine.project, root);
     syncTimelineViewport(root, this.view, this.engine.project);
+    this.scheduleRender();
   }
 
   #step(frames: number): void {
@@ -2909,16 +2944,28 @@ export class Studio {
     this.#revealedItemId = undefined;
   }
 
+  /**
+   * Scrolls the Track carrying the selection into view.
+   *
+   * Reads the Track row rather than the clip, because the clip may not have
+   * been built: only a band around the viewport is drawn, and a selection can
+   * come from somewhere other than a click on the timeline. The row is what the
+   * vertical scroll is actually chasing, and it always exists.
+   */
   #revealSelectedClip(): void {
     const itemId = this.view.selectedItemId;
     if (itemId === undefined || itemId === this.#revealedItemId) return;
-    const clip = this.#els.timeline.querySelector(`[data-item="${CSS.escape(itemId)}"]`);
+    const trackId = this.engine.project?.items[itemId]?.trackId;
+    const row =
+      trackId === undefined
+        ? null
+        : this.#els.timeline.querySelector(`.track-row[data-track="${CSS.escape(trackId)}"]`);
     const body = this.#els.timeline.querySelector('[data-role="body"]');
-    if (!(clip instanceof HTMLElement) || !(body instanceof HTMLElement)) return;
+    if (!(row instanceof HTMLElement) || !(body instanceof HTMLElement)) return;
     const bodyBox = body.getBoundingClientRect();
-    const clipBox = clip.getBoundingClientRect();
-    if (clipBox.bottom > bodyBox.bottom) body.scrollTop += clipBox.bottom - bodyBox.bottom + 8;
-    else if (clipBox.top < bodyBox.top) body.scrollTop -= bodyBox.top - clipBox.top + 8;
+    const rowBox = row.getBoundingClientRect();
+    if (rowBox.bottom > bodyBox.bottom) body.scrollTop += rowBox.bottom - bodyBox.bottom + 8;
+    else if (rowBox.top < bodyBox.top) body.scrollTop -= bodyBox.top - rowBox.top + 8;
     this.#revealedItemId = itemId;
   }
 
@@ -3040,10 +3087,19 @@ export class Studio {
     this.run('重命名素材', () => renameAsset(this.engine, assetId, name));
   }
 
-  #queueWaveforms(project: AelionProject | null): void {
+  /**
+   * Queues waveforms for the audio Items in view that do not have one.
+   *
+   * A decode that fails is not retried until something changes -- the band
+   * moves, the Project is edited, another decode lands. Retrying every frame is
+   * what the caller used to do, and for an Item that cannot be decoded at all
+   * that is an attempt per frame, forever, which is itself a source of stutter.
+   */
+  #queueWaveforms(project: AelionProject | null, band: TimelineBand): void {
     if (project === null) return;
     if (this.engine.session?.player.state === 'playing') return;
     for (const item of Object.values(project.items)) {
+      if (!itemInBand(item, band)) continue;
       if (
         item.type !== 'audio' ||
         this.engine.waveforms.has(item.id) ||
@@ -3059,12 +3115,13 @@ export class Studio {
     }
   }
 
-  #queueFilmstrips(project: AelionProject | null): void {
+  #queueFilmstrips(project: AelionProject | null, band: TimelineBand): void {
     if (project === null) return;
     if (this.engine.session?.player.state === 'playing') return;
     if ((this.engine.preview?.snapshot().renderedFrames ?? 0) === 0) return;
     for (const item of Object.values(project.items)) {
       if (item.type !== 'video' && item.type !== 'image') continue;
+      if (!itemInBand(item, band)) continue;
       if (this.engine.hasCurrentFilmstrip(item) || this.#filmstripQueued.has(item.id)) continue;
       this.#filmstripQueued.add(item.id);
       void this.engine.ensureFilmstrip(item).finally(() => {

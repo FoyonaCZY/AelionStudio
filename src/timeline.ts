@@ -1,10 +1,12 @@
 import type {
   AelionProject,
   ItemEntity,
+  MarkerEntity,
   TrackEntity,
   TransitionEntity,
 } from '@aelionsdk/project-schema';
 import type { JsonObject } from '@aelionsdk/core';
+import type { TimelineMovePlan } from '@aelionsdk/sdk';
 
 import { encodeHex, readLinearColor } from './color.js';
 import {
@@ -14,7 +16,7 @@ import {
   orderedTracks,
   transitionLabel,
 } from './project.js';
-import type { MagneticPlan } from './timeline-layout.js';
+
 import { formatTimecode, frameDurationUs, safeText } from './format.js';
 import { icon, type IconName } from './icons.js';
 import { MIN_TIMELINE_US, SNAP_PIXELS, TRACK_HEADER_WIDTH, type ViewState } from './view-state.js';
@@ -26,7 +28,7 @@ const EMPTY_URLS: ReadonlyMap<string, string> = new Map();
 /** What an in-flight drag wants drawn, before any of it has been committed. */
 export interface TimelineDragPreview {
   readonly itemId: string;
-  readonly plan: MagneticPlan;
+  readonly plan: TimelineMovePlan;
   /**
    * How far the dragged clip has been carried from where it sits committed.
    *
@@ -46,10 +48,15 @@ export interface TimelineDragPreview {
  * During a drag the planned layout differs from the committed one, and clips can
  * belong to a different lane than the Project says. Resolving that here keeps
  * every caller downstream working from a single, already-reconciled view.
+ *
+ * Items outside `band` are dropped before the lanes are sorted rather than
+ * after: sorting is the only part of this that is worse than linear, and on a
+ * long timeline almost everything it sorts is off screen.
  */
 function itemsByTrack(
   project: AelionProject | null,
   drag: TimelineDragPreview | undefined,
+  band: TimelineBand,
 ): Map<string, { readonly item: ItemEntity; readonly startUs: number }[]> {
   const byTrack = new Map<string, { item: ItemEntity; startUs: number }[]>();
   if (project === null) return byTrack;
@@ -61,6 +68,7 @@ function itemsByTrack(
       const planned = drag?.plan.placements.get(id);
       const trackId = planned?.trackId ?? item.trackId;
       const startUs = planned?.startUs ?? item.range.startUs;
+      if (!intersectsBand(startUs, item.range.durationUs, band)) continue;
       const lane = byTrack.get(trackId);
       if (lane === undefined) byTrack.set(trackId, [{ item, startUs }]);
       else lane.push({ item, startUs });
@@ -160,6 +168,53 @@ export function timelineViewportWidthPx(root: HTMLElement): number {
   return Math.max(0, root.clientWidth);
 }
 
+/** The stretch of time a rebuild draws clips for. */
+export interface TimelineBand {
+  /** Changes only when the band moves, so it can key a rebuild. */
+  readonly index: number;
+  readonly startUs: number;
+  readonly endUs: number;
+}
+
+/**
+ * The time range a rebuild covers, quantized so scrolling inside it draws
+ * nothing new.
+ *
+ * At the default zoom a four-thousand-clip timeline is a third of a million
+ * pixels wide and roughly four clips of it are on screen. Building the other
+ * three thousand nine hundred and ninety-six produces markup nobody can see and
+ * a DOM the browser has to lay out anyway, which is most of what a rebuild
+ * costs. Clips are drawn a viewport either side of what is visible, and the
+ * band only moves in whole viewports, so an ordinary scroll crosses a boundary
+ * rarely and lands on markup that is already there when it does.
+ */
+export function timelineBand(view: ViewState, viewportPx: number): TimelineBand {
+  const stridePx = Math.max(240, viewportPx);
+  const index = Math.floor(Math.max(0, view.scrollLeftPx) / stridePx);
+  const perUs = view.pixelsPerSecond / 1_000_000;
+  return {
+    index,
+    startUs: ((index - 1) * stridePx) / perUs,
+    endUs: ((index + 2) * stridePx) / perUs,
+  };
+}
+
+function intersectsBand(startUs: number, durationUs: number, band: TimelineBand): boolean {
+  return startUs < band.endUs && startUs + durationUs > band.startUs;
+}
+
+/**
+ * Whether an Item is close enough to the viewport to be worth decoding for.
+ *
+ * Filmstrips and waveforms are per-clip media work, and queueing them for a
+ * whole Project means decoding thousands of clips nobody has looked at -- which
+ * competes with the frame that is actually on screen. Scrolling brings the next
+ * band into view and queues it then.
+ */
+export function itemInBand(item: ItemEntity, band: TimelineBand): boolean {
+  return intersectsBand(item.range.startUs, item.range.durationUs, band);
+}
+
 export function timelineContentWidthPx(
   view: ViewState,
   project: AelionProject | null,
@@ -183,63 +238,6 @@ export function clampTimelineScroll(
   return next;
 }
 
-function nearestTickTimes(
-  timeUs: number,
-  view: ViewState,
-  frameRate: { readonly numerator: number; readonly denominator: number },
-): number[] {
-  const step = Math.max(1, rulerMinorStepUs(view.pixelsPerSecond, frameRate));
-  const nearest = Math.round(timeUs / step) * step;
-  return [nearest, nearest - step, nearest + step];
-}
-
-export function snapTime(
-  timeUs: number,
-  project: AelionProject | null,
-  view: ViewState,
-  extra: readonly number[] = [],
-  options?: { readonly includeItems?: boolean },
-): number {
-  if (!view.snap || project === null) return Math.max(0, timeUs);
-  const thresholdUs = Math.round((SNAP_PIXELS / view.pixelsPerSecond) * 1_000_000);
-  const frameRate = sequenceFrameRate(project);
-  const candidates = [
-    0,
-    view.currentTimeUs,
-    ...extra,
-    ...nearestTickTimes(timeUs, view, frameRate),
-  ];
-  if (options?.includeItems !== false) {
-    for (const item of Object.values(project.items)) {
-      candidates.push(item.range.startUs, item.range.startUs + item.range.durationUs);
-    }
-  }
-  for (const transition of Object.values(project.transitions)) {
-    candidates.push(
-      transition.range.startUs,
-      transition.range.startUs + transition.range.durationUs,
-    );
-  }
-  for (const marker of Object.values(project.markers)) {
-    if (marker.owner.type === 'sequence') {
-      candidates.push(marker.timeUs);
-      continue;
-    }
-    const item = project.items[marker.owner.id];
-    if (item !== undefined) candidates.push(item.range.startUs + marker.timeUs);
-  }
-  let best = timeUs;
-  let bestDelta = thresholdUs + 1;
-  for (const candidate of candidates) {
-    const delta = Math.abs(candidate - timeUs);
-    if (delta < bestDelta) {
-      best = candidate;
-      bestDelta = delta;
-    }
-  }
-  return Math.max(0, best);
-}
-
 export function snapPlayheadTime(
   timeUs: number,
   project: AelionProject | null,
@@ -250,6 +248,104 @@ export function snapPlayheadTime(
   return quantizeToRuler(timeUs, view, frameRate);
 }
 
+/** Keeps the closest candidate to `target` that is within `thresholdUs`. */
+interface Nearest {
+  consider(candidate: number): void;
+  readonly value: number;
+}
+
+function nearestTo(target: number, thresholdUs: number): Nearest {
+  let best = target;
+  let bestDelta = thresholdUs + 1;
+  return {
+    consider(candidate: number): void {
+      const delta = candidate > target ? candidate - target : target - candidate;
+      // Strictly closer: two candidates at the same distance are settled by
+      // which is offered first, so the visit order below is part of the
+      // behaviour rather than an implementation detail.
+      if (delta < bestDelta) {
+        best = candidate;
+        bestDelta = delta;
+      }
+    },
+    get value(): number {
+      return best;
+    },
+  };
+}
+
+/**
+ * The nearest snap target to `timeUs`, with extra candidates offered by a
+ * visitor rather than collected into an array.
+ *
+ * Order matters: an equidistant pair is settled by whichever is offered first,
+ * so the sequence here -- origin, playhead, caller extras, ruler ticks, Items,
+ * Transitions, Markers -- is the behaviour, not an accident of how the list
+ * happened to be built.
+ */
+function nearestSnap(
+  timeUs: number,
+  project: AelionProject,
+  view: ViewState,
+  visitExtras: (consider: (candidate: number) => void) => void,
+  includeItems: boolean,
+): number {
+  const thresholdUs = Math.round((SNAP_PIXELS / view.pixelsPerSecond) * 1_000_000);
+  const nearest = nearestTo(timeUs, thresholdUs);
+  const consider = (candidate: number): void => {
+    nearest.consider(candidate);
+  };
+
+  consider(0);
+  consider(view.currentTimeUs);
+  visitExtras(consider);
+  const step = Math.max(1, rulerMinorStepUs(view.pixelsPerSecond, sequenceFrameRate(project)));
+  const tick = Math.round(timeUs / step) * step;
+  consider(tick);
+  consider(tick - step);
+  consider(tick + step);
+
+  if (includeItems) {
+    for (const item of Object.values(project.items)) {
+      consider(item.range.startUs);
+      consider(item.range.startUs + item.range.durationUs);
+    }
+  }
+  for (const transition of Object.values(project.transitions)) {
+    consider(transition.range.startUs);
+    consider(transition.range.startUs + transition.range.durationUs);
+  }
+  for (const marker of Object.values(project.markers)) {
+    if (marker.owner.type === 'sequence') {
+      consider(marker.timeUs);
+      continue;
+    }
+    const item = project.items[marker.owner.id];
+    if (item !== undefined) consider(item.range.startUs + marker.timeUs);
+  }
+  return Math.max(0, nearest.value);
+}
+
+export function snapTime(
+  timeUs: number,
+  project: AelionProject | null,
+  view: ViewState,
+): number {
+  if (!view.snap || project === null) return Math.max(0, timeUs);
+  return nearestSnap(timeUs, project, view, () => undefined, true);
+}
+
+/**
+ * Snaps a dragged Item by whichever of its edges lands closest.
+ *
+ * The candidates used to be collected into an array first: one entry per edge
+ * of every other Item, copied, and then -- for each Marker on the dragged Item
+ * -- a whole further copy offset by that Marker. On a long timeline that is
+ * tens of thousands of numbers allocated and discarded on every pointer move,
+ * to pick one of them. They are offered to the search directly instead, in the
+ * order the list used to hold them, because an equidistant pair is settled by
+ * whichever arrives first.
+ */
 export function snapItemStart(
   startUs: number,
   item: ItemEntity,
@@ -258,30 +354,59 @@ export function snapItemStart(
 ): number {
   if (!view.snap) return Math.max(0, startUs);
   const durationUs = item.range.durationUs;
-  const others: number[] = [];
+
   const ownMarks: number[] = [];
-  for (const other of Object.values(project.items)) {
-    if (other.id === item.id) continue;
-    others.push(other.range.startUs, other.range.startUs + other.range.durationUs);
-  }
   for (const marker of Object.values(project.markers)) {
-    if (marker.owner.type === 'sequence') {
-      others.push(marker.timeUs);
-      continue;
+    if (marker.owner.type === 'item' && marker.owner.id === item.id) ownMarks.push(marker.timeUs);
+  }
+
+  // Materialized once. The edges are visited up to three times -- for the start
+  // edge, for the end edge, and once more per Marker the Item carries -- and
+  // rebuilding the values array each time costs more than the scan does.
+  const items = Object.values(project.items);
+  const markers = Object.values(project.markers);
+
+  /**
+   * Every edge the Item could be placed against: the other Items' bounds, and
+   * the Markers that do not belong to it.
+   */
+  const visitEdges = (consider: (candidate: number) => void): void => {
+    for (const other of items) {
+      if (other.id === item.id) continue;
+      consider(other.range.startUs);
+      consider(other.range.startUs + other.range.durationUs);
     }
-    const owner = project.items[marker.owner.id];
-    if (owner === undefined) continue;
-    const time = owner.range.startUs + marker.timeUs;
-    if (marker.owner.id === item.id) ownMarks.push(marker.timeUs);
-    else others.push(time);
-  }
-  const startExtras = [...others];
-  for (const mark of ownMarks) {
-    for (const other of others) startExtras.push(other - mark);
-  }
-  const startSnap = snapTime(startUs, project, view, startExtras, { includeItems: false });
+    for (const marker of markers) {
+      if (marker.owner.type === 'sequence') {
+        consider(marker.timeUs);
+        continue;
+      }
+      if (marker.owner.id === item.id) continue;
+      const owner = project.items[marker.owner.id];
+      if (owner !== undefined) consider(owner.range.startUs + marker.timeUs);
+    }
+  };
+
+  const startSnap = nearestSnap(
+    startUs,
+    project,
+    view,
+    consider => {
+      visitEdges(consider);
+      // Landing one of the Item's own Markers on an edge moves the Item's start
+      // back by that Marker's offset. Only walked when the Item carries one,
+      // which almost no clip does.
+      for (const mark of ownMarks) {
+        visitEdges(candidate => {
+          consider(candidate - mark);
+        });
+      }
+    },
+    false,
+  );
   const endSnap =
-    snapTime(startUs + durationUs, project, view, others, { includeItems: false }) - durationUs;
+    nearestSnap(startUs + durationUs, project, view, visitEdges, false) - durationUs;
+
   return Math.abs(endSnap - startUs) < Math.abs(startSnap - startUs)
     ? Math.max(0, endSnap)
     : startSnap;
@@ -426,6 +551,7 @@ function rulerHtml(
   durationUs: number,
   view: ViewState,
   frameRate: { numerator: number; denominator: number },
+  band: TimelineBand,
   widthPx?: number,
 ): string {
   const width = Math.max(800, widthPx ?? 0, (durationUs / 1_000_000) * view.pixelsPerSecond);
@@ -437,7 +563,16 @@ function rulerHtml(
     minorUs = Math.max(minorUs, Math.ceil(durationUs / maxTicks / minorUs) * minorUs);
   }
   const endUs = durationUs + majorUs;
-  for (let timeUs = 0; timeUs <= endUs; timeUs += minorUs) {
+  // The scale keeps its full width so scrolling extents stay right, but only
+  // the band is ticked. A four-hour timeline at second resolution is twelve
+  // thousand span elements, none of which is on screen, and the ruler was the
+  // largest thing left in a rebuild once the clips were bounded.
+  //
+  // The step is still derived from the whole duration, so tick density does not
+  // change as the band moves.
+  const firstUs = Math.max(0, Math.floor(band.startUs / minorUs) * minorUs);
+  const lastUs = Math.min(endUs, band.endUs);
+  for (let timeUs = firstUs; timeUs <= lastUs; timeUs += minorUs) {
     const x = (timeUs / 1_000_000) * view.pixelsPerSecond;
     const rem = ((timeUs % majorUs) + majorUs) % majorUs;
     const isMajor = rem < minorUs / 2 || rem > majorUs - minorUs / 2;
@@ -461,7 +596,8 @@ export function renderTimeline(options: {
 }): void {
   const { root, project, view } = options;
   const drag = options.drag;
-  const laneItems = itemsByTrack(project, drag);
+  const band = timelineBand(view, timelineViewportWidthPx(root));
+  const laneItems = itemsByTrack(project, drag, band);
   const previousBody = root.querySelector('[data-role="body"]');
   const scrollTop = previousBody instanceof HTMLElement ? previousBody.scrollTop : 0;
   const thumbs = options.thumbs ?? EMPTY_URLS;
@@ -476,10 +612,28 @@ export function renderTimeline(options: {
           denominator: 1,
         }) as { numerator: number; denominator: number });
   const tracks = project === null ? [] : orderedTracks(project);
-  const markers =
-    project === null
-      ? []
-      : Object.values(project.markers).filter(marker => marker.owner.type === 'sequence');
+  // One pass over the Markers rather than one pass per clip. Scanning the
+  // collection inside the clip loop is quadratic, and it is the reason a four
+  // thousand clip timeline costs eight times a thousand-clip one rather than
+  // four.
+  const markers: MarkerEntity[] = [];
+  const itemMarkers = new Map<string, MarkerEntity[]>();
+  for (const marker of Object.values(project?.markers ?? {})) {
+    if (marker.owner.type === 'sequence') {
+      if (marker.timeUs >= band.startUs && marker.timeUs <= band.endUs) markers.push(marker);
+      continue;
+    }
+    const owned = itemMarkers.get(marker.owner.id);
+    if (owned === undefined) itemMarkers.set(marker.owner.id, [marker]);
+    else owned.push(marker);
+  }
+  const trackTransitions = new Map<string, TransitionEntity[]>();
+  for (const transition of Object.values(project?.transitions ?? {})) {
+    if (!intersectsBand(transition.range.startUs, transition.range.durationUs, band)) continue;
+    const owned = trackTransitions.get(transition.trackId);
+    if (owned === undefined) trackTransitions.set(transition.trackId, [transition]);
+    else owned.push(transition);
+  }
   const playheadX = usToX(view.currentTimeUs, view) + TRACK_HEADER_WIDTH;
 
   root.innerHTML = `
@@ -487,7 +641,7 @@ export function renderTimeline(options: {
     <div class="tl-ruler">
       <div class="tl-corner"></div>
       <div class="tl-ruler-scroll" data-role="ruler">
-        ${rulerHtml(durationUs, view, frameRate, contentWidth - TRACK_HEADER_WIDTH)}
+        ${rulerHtml(durationUs, view, frameRate, band, contentWidth - TRACK_HEADER_WIDTH)}
       </div>
     </div>
     <div class="tl-body" data-role="body">
@@ -497,6 +651,9 @@ export function renderTimeline(options: {
           const height = TRACK_HEIGHT[track.kind];
           const items = laneItems.get(track.id) ?? [];
           const clips = items
+            .filter(({ item, startUs }) =>
+              intersectsBand(startUs, item.range.durationUs, band),
+            )
             .map(({ item, startUs }) => {
               const left = (startUs / 1_000_000) * view.pixelsPerSecond;
               const width = Math.max(6, (item.range.durationUs / 1_000_000) * view.pixelsPerSecond);
@@ -511,8 +668,7 @@ export function renderTimeline(options: {
                   ? ''
                   : `<span class="clip-film" style="background-image:url('${safeText(film)}')"></span>`;
               const tintStyle = tint === undefined ? '' : `background:${safeText(tint)};`;
-              const clipMarks = Object.values(project?.markers ?? {})
-                .filter(marker => marker.owner.type === 'item' && marker.owner.id === item.id)
+              const clipMarks = (itemMarkers.get(item.id) ?? [])
                 .map(marker => clipMarkerButton(marker, item, track.id, view))
                 .join('');
               const sizeClass = width < 16 ? ' tiny' : width < 28 ? ' narrow' : '';
@@ -526,8 +682,7 @@ export function renderTimeline(options: {
               </button>`;
             })
             .join('');
-          const transitions = Object.values(project?.transitions ?? {})
-            .filter(transition => transition.trackId === track.id)
+          const transitions = (trackTransitions.get(track.id) ?? [])
             .map(transition => transitionBlock(transition, track, view, project, height))
             .join('');
           const muted = track.kind === 'audio' && track.audio?.muted === true;
@@ -584,20 +739,17 @@ export function renderTimeline(options: {
  */
 export function applyTimelineDrag(options: {
   readonly root: HTMLElement;
-  readonly project: AelionProject | null;
   readonly view: ViewState;
   readonly drag: TimelineDragPreview;
 }): void {
-  const { root, project, view, drag } = options;
-  const planned = new Map<string, { trackId: string; startUs: number }>();
-  for (const [trackId, lane] of itemsByTrack(project, drag)) {
-    for (const entry of lane) planned.set(entry.item.id, { trackId, startUs: entry.startUs });
-  }
+  const { root, view, drag } = options;
+  // Read straight from the plan. Rebuilding a position for every Item in the
+  // Project would sort the whole timeline on every pointer move, and the plan
+  // already lists exactly the clips that move -- a clip missing from it is a
+  // clip that stays where the markup already puts it.
   for (const node of root.querySelectorAll<HTMLElement>('.clip[data-item]')) {
     const id = node.dataset.item;
-    const at = id === undefined ? undefined : planned.get(id);
-    if (at === undefined) continue;
-    const left = (at.startUs / 1_000_000) * view.pixelsPerSecond;
+    if (id === undefined) continue;
     // The class carries `transition: none`; a drag updates nodes in place, so
     // the last rebuild predates the gesture and cannot have set it.
     node.classList.toggle('dragging', id === drag.itemId);
@@ -609,8 +761,13 @@ export function applyTimelineDrag(options: {
     // A refused drop must not leave neighbours standing aside for it: they go
     // back to where they really are, so the only thing moving is the clip in
     // hand, and it is visibly marked as having nowhere to land.
-    const base = Number(node.dataset.left ?? '0');
-    const dx = drag.valid ? left - base : 0;
+    const at = drag.valid ? drag.plan.placements.get(id) : undefined;
+    if (at === undefined) {
+      node.style.transform = '';
+      continue;
+    }
+    const left = (at.startUs / 1_000_000) * view.pixelsPerSecond;
+    const dx = left - Number(node.dataset.left ?? '0');
     node.style.transform = Math.abs(dx) < 0.01 ? '' : `translateX(${dx.toFixed(2)}px)`;
   }
   const line = root.querySelector<HTMLElement>('.tl-insert');
@@ -654,10 +811,17 @@ export function syncTimelineViewport(
     playhead.style.left = `${(usToX(view.currentTimeUs, view) + TRACK_HEADER_WIDTH).toFixed(2)}px`;
   }
   if (project === null) return;
-  for (const marker of Object.values(project.markers)) {
-    const node = root.querySelector(`[data-marker="${CSS.escape(marker.id)}"]`);
-    if (!(node instanceof HTMLElement)) continue;
+  // Walk the marker nodes that exist rather than the Markers in the Project.
+  // Only the ones inside the visible band are ever built, so looking each
+  // Marker up by selector spends a DOM query per Marker to discover that most
+  // of them are not there -- and this runs on every scroll and every frame of
+  // playback.
+  for (const node of root.querySelectorAll<HTMLElement>('[data-marker]')) {
+    const marker = project.markers[node.dataset.marker ?? ''];
+    if (marker === undefined) continue;
     if (marker.owner.type === 'item') {
+      // Positioned inside its Track's content, which scrolls with the lane, so
+      // its offset does not move when the viewport does.
       const item = project.items[marker.owner.id];
       if (item === undefined) continue;
       node.style.left = `${(((item.range.startUs + marker.timeUs) / 1_000_000) * view.pixelsPerSecond).toFixed(2)}px`;

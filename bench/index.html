@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>loading</title>
+    <link rel="stylesheet" href="../src/style.css" />
+    <style>
+      body {
+        margin: 0;
+      }
+      /* The timeline sizes itself from its host, and a rebuild is only honest
+         at the width a real editor gives it. */
+      #timeline {
+        position: relative;
+        width: 1440px;
+        height: 300px;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="timeline" class="timeline"></div>
+    <script type="module" src="./timeline.bench.ts"></script>
+    <script type="module" src="./interactions.bench.ts"></script>
+  </body>
+</html>

@@ -167,6 +167,7 @@ export class EditorEngine {
   public readonly thumbs = new Map<string, string>();
   public readonly filmstrips = new Map<string, string>();
   readonly #filmstripKeys = new Map<string, string>();
+  #previewVersion = 0;
   #filmstripTail: Promise<void> = Promise.resolve();
   #filmstripAbort = new AbortController();
   #waveformAbort = new AbortController();
@@ -188,6 +189,19 @@ export class EditorEngine {
 
   public get project(): AelionProject | null {
     return this.session?.getSnapshot().project ?? null;
+  }
+
+  /**
+   * Bumped whenever a waveform, thumbnail or filmstrip is added, replaced or
+   * dropped.
+   *
+   * A view keys its rebuild on this rather than on the contents of the maps.
+   * Listing their keys costs a pass per frame and still misses a replacement,
+   * which keeps the key and changes the URL -- the case a trimmed clip
+   * produces.
+   */
+  public get previewVersion(): number {
+    return this.#previewVersion;
   }
 
   public get format(): SequenceFormat {
@@ -324,6 +338,7 @@ export class EditorEngine {
     }
     media?.clear();
     this.waveforms.clear();
+    this.#previewVersion += 1;
     this.#revokeThumbs();
     this.#revokeFilmstrips();
   }
@@ -819,6 +834,7 @@ export class EditorEngine {
         signal: this.#waveformAbort.signal,
       });
       this.waveforms.set(item.id, result);
+      this.#previewVersion += 1;
       return result;
     } catch {
       return undefined;
@@ -829,10 +845,15 @@ export class EditorEngine {
     const project = this.project;
     if (project === null) {
       this.waveforms.clear();
+      this.#previewVersion += 1;
       return;
     }
     for (const id of [...this.waveforms.keys()]) {
-      if (project.items[id]?.type !== 'audio') this.waveforms.delete(id);
+      if (project.items[id]?.type !== 'audio') {
+        this.waveforms.delete(id);
+        this.#previewVersion += 1;
+        this.#previewVersion += 1;
+      }
     }
   }
 
@@ -917,6 +938,7 @@ export class EditorEngine {
       const previous = this.filmstrips.get(item.id);
       if (previous !== undefined) URL.revokeObjectURL(previous);
       this.filmstrips.set(item.id, URL.createObjectURL(blob));
+      this.#previewVersion += 1;
       this.#filmstripKeys.set(item.id, key);
       this.#onChange?.();
     } catch {
@@ -938,6 +960,7 @@ export class EditorEngine {
         const url = this.filmstrips.get(id);
         if (url !== undefined) URL.revokeObjectURL(url);
         this.filmstrips.delete(id);
+        this.#previewVersion += 1;
         this.#filmstripKeys.delete(id);
       }
     }
@@ -946,6 +969,7 @@ export class EditorEngine {
   #revokeFilmstrips(): void {
     for (const url of this.filmstrips.values()) URL.revokeObjectURL(url);
     this.filmstrips.clear();
+    this.#previewVersion += 1;
     this.#filmstripKeys.clear();
   }
 
@@ -1148,6 +1172,7 @@ export class EditorEngine {
       const previous = this.thumbs.get(assetId);
       if (previous !== undefined) URL.revokeObjectURL(previous);
       this.thumbs.set(assetId, URL.createObjectURL(blob));
+      this.#previewVersion += 1;
       this.#onChange?.();
     } catch {
       // Thumbnail generation is best-effort.
@@ -1157,5 +1182,6 @@ export class EditorEngine {
   #revokeThumbs(): void {
     for (const url of this.thumbs.values()) URL.revokeObjectURL(url);
     this.thumbs.clear();
+    this.#previewVersion += 1;
   }
 }

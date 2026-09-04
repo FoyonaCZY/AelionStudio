@@ -10,6 +10,7 @@
 
 [![在线体验](https://img.shields.io/badge/体验-studio.aelion.chat-3d8bfd.svg)](https://studio.aelion.chat)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
+[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-2ea44f.svg)](https://github.com/FoyonaCZY/AelionStudio/releases/tag/v0.1.0)
 [![Built on AelionSDK](https://img.shields.io/badge/built%20on-AelionSDK-3d8bfd.svg)](https://github.com/FoyonaCZY/AelionSDK)
 [![No install](https://img.shields.io/badge/install-none-8a5528.svg)](#快速开始)
 [![Media never uploaded](https://img.shields.io/badge/media-never%20uploaded-5c4480.svg)](#素材不出本机)
@@ -19,6 +20,8 @@
 ---
 
 Aelion Studio 是一个完整跑在浏览器标签页里的视频剪辑器。多轨时间线、画面变换、字幕、调音、变速、转场、效果，以及**在本机直接编码 MP4** —— 没有渲染服务器，没有上传等待，没有导出队列。
+
+**0.1.0** 是第一个公开版本，基于 AelionSDK **2.0.0**，工程文件使用 Project v2 Schema。
 
 页面加载完成之后，从剪辑到导出的全过程**不产生任何网络请求**。
 
@@ -153,7 +156,7 @@ Studio 是自包含的。它依赖已发布的 `@aelionsdk/*` 包，因此在任
 ```bash
 git clone https://github.com/FoyonaCZY/AelionStudio.git
 cd AelionStudio
-pnpm install
+pnpm install --frozen-lockfile
 ```
 
 ### 开发
@@ -234,7 +237,7 @@ Studio 依赖 **WebCodecs**、**WebGL2**、**OPFS** 和 **AudioWorklet**。
 
 ## 架构
 
-Studio 严格构建在 [`@aelionsdk/sdk`](https://github.com/FoyonaCZY/AelionSDK) 与 `@aelionsdk/export` 的**公开入口**之上 —— 没有私有 API，没有补丁。你在这里看到的一切，都可以用同一套接口构建进你自己的产品。
+Studio 0.1.0 严格构建在 [`@aelionsdk/sdk`](https://github.com/FoyonaCZY/AelionSDK) 与 `@aelionsdk/export` 的 **2.0 公开入口**之上 —— 没有私有 API，没有补丁。你在这里看到的一切，都可以用同一套接口构建进你自己的产品。
 
 ```
 Aelion Studio  ·  原生 TypeScript，无框架
