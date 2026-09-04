@@ -1,6 +1,6 @@
 {
   "name": "aelion-studio",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Browser-based multi-track video editor. Media never leaves the machine and export runs locally through WebCodecs.",
   "license": "MIT",
@@ -33,16 +33,23 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "test:smoke": "node bench/smoke.mjs",
+    "bench:timeline": "node bench/run.mjs",
+    "bench:interactions": "node bench/interactions.mjs"
   },
   "dependencies": {
-    "@aelionsdk/core": "^1.2.0",
-    "@aelionsdk/export": "^1.2.0",
-    "@aelionsdk/project-schema": "^1.2.0",
-    "@aelionsdk/sdk": "^1.2.0"
+    "@aelionsdk/core": "^2.0.0",
+    "@aelionsdk/export": "^2.0.0",
+    "@aelionsdk/project-schema": "^2.0.0",
+    "@aelionsdk/sdk": "^2.0.0"
   },
   "devDependencies": {
-    "@aelionsdk/vite-plugin": "^1.2.0",
+    "@aelionsdk/vite-plugin": "^2.0.0",
+    "@types/node": "20.19.8",
+    "fast-check": "4.2.0",
+    "playwright": "1.62.0",
     "typescript": "5.8.3",
     "vite": "7.3.6",
     "vitest": "3.2.7"
